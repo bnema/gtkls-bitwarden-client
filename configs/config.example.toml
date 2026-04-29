@@ -1,0 +1,37 @@
+# gtk4-layershell-bitwarden — example configuration
+#
+# Copy this file to your config directory:
+#   mkdir -p ~/.config/gtk4-layershell-bitwarden
+#   cp configs/config.example.toml ~/.config/gtk4-layershell-bitwarden/config.toml
+#
+# All values shown here are the built-in defaults. Uncomment and change
+# only what you need.
+
+[bitwarden]
+# email = ""
+# region = "us"                          # "us", "eu", or "self_hosted"
+# server_url = ""                        # required when region = "self_hosted"
+
+[sync]
+# revision_check_interval = "5m"         # how often to check remote revision
+
+[security]
+# idle_relock_after = "15m"              # relock after inactivity
+# resident_relock_after = "30m"          # relock when compositor surface is lost
+
+[security.background_sync]
+# enabled = true
+# interval = "15m"                       # full sync interval when unlocked
+# retry_timeout = "30s"                  # back-off between retries
+
+[actions]
+# clipboard_clear_after = "45s"          # auto-clear clipboard after copy
+# close_after_copy = true                # close overlay after copy
+# default_primary_action = "copy_password"  # "copy_password", "copy_username", "open_url", "open_detail"
+
+[appearance]
+# ui_scale = 1.0                         # 0.5 – 3.0
+# color_scheme = "dark"                  # "dark" or "light"
+
+[cache]
+# ttl = "5m"                             # encrypted vault cache lifetime
