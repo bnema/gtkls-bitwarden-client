@@ -781,7 +781,13 @@ func (s *Service) ResolveConflict(ctx context.Context, conflictID string, resolu
 			s.items = append(s.items, dup)
 
 			payload, _ := json.Marshal(dup)
-			s.appendOutboxLocked(coresync.MutationCreate, dup.ID, payload)
+			s.outbox = append(s.outbox, coresync.OutboxMutation{
+				ID:        fmt.Sprintf("m-%d", s.now().UnixNano()),
+				Kind:      coresync.MutationCreate,
+				ItemID:    dup.ID,
+				CreatedAt: s.now(),
+				Payload:   payload,
+			})
 
 			// The original local mutation has been converted into a duplicate local
 			// create, so remove mutations targeting the remote-resolved original.
