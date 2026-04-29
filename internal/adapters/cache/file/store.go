@@ -77,22 +77,22 @@ func (s *Store) Save(ctx context.Context, snapshot cache.Snapshot) error {
 	defer f.Close() //nolint:errcheck
 
 	if _, err := f.Write(data); err != nil {
-		os.Remove(tmpFile) // best-effort cleanup, ignore error
+		_ = os.Remove(tmpFile) // best-effort cleanup, ignore error
 		return err
 	}
 
 	if err := f.Sync(); err != nil {
-		os.Remove(tmpFile)
+		_ = os.Remove(tmpFile)
 		return err
 	}
 
 	if err := ctx.Err(); err != nil {
-		os.Remove(tmpFile)
+		_ = os.Remove(tmpFile)
 		return err
 	}
 
 	if err := f.Close(); err != nil {
-		os.Remove(tmpFile)
+		_ = os.Remove(tmpFile)
 		return err
 	}
 

@@ -47,9 +47,11 @@ func NewOverlay(service in.AppService, opts Options) *Overlay {
 
 // GTKAvailable checks whether a GTK display is available, returning false if
 // not (e.g. no display server). It recovers from any panic.
-func GTKAvailable() bool {
+func GTKAvailable() (ok bool) {
 	defer func() {
-		recover()
+		if recover() != nil {
+			ok = false
+		}
 	}()
 	return gtklib.InitCheck()
 }

@@ -597,7 +597,7 @@ func (v *View) renderDetail(detail Detail) {
 		idleAddOnce(func() { v.render() })
 	}
 	handler := backBtn.ConnectClicked(&backClickedCb)
-	v.retainDynamic(&backBtn.Widget.InitiallyUnowned.Object, handler, backClickedCb)
+	v.retainDynamic(&backBtn.Object, handler, backClickedCb)
 	v.detailBox.Append(&backBtn.Widget)
 
 	// Title
@@ -702,7 +702,7 @@ func (v *View) renderDetail(detail Detail) {
 		})
 	}
 	handler0 := editBtn.ConnectClicked(&editCb)
-	v.retainDynamic(&editBtn.Widget.InitiallyUnowned.Object, handler0, editCb)
+	v.retainDynamic(&editBtn.Object, handler0, editCb)
 	v.detailBox.Append(&editBtn.Widget)
 
 	// Trash/Restore/Delete buttons
@@ -723,7 +723,7 @@ func (v *View) renderDetail(detail Detail) {
 			}()
 		}
 		handler := trashBtn.ConnectClicked(&trashCb)
-		v.retainDynamic(&trashBtn.Widget.InitiallyUnowned.Object, handler, trashCb)
+		v.retainDynamic(&trashBtn.Object, handler, trashCb)
 		v.detailBox.Append(&trashBtn.Widget)
 	} else {
 		restoreBtn := gtklib.NewButtonWithLabel("Restore")
@@ -742,7 +742,7 @@ func (v *View) renderDetail(detail Detail) {
 			}()
 		}
 		handler := restoreBtn.ConnectClicked(&restoreCb)
-		v.retainDynamic(&restoreBtn.Widget.InitiallyUnowned.Object, handler, restoreCb)
+		v.retainDynamic(&restoreBtn.Object, handler, restoreCb)
 		v.detailBox.Append(&restoreBtn.Widget)
 
 		deleteBtn := gtklib.NewButtonWithLabel("Delete permanently")
@@ -761,7 +761,7 @@ func (v *View) renderDetail(detail Detail) {
 			}()
 		}
 		handler = deleteBtn.ConnectClicked(&deleteCb)
-		v.retainDynamic(&deleteBtn.Widget.InitiallyUnowned.Object, handler, deleteCb)
+		v.retainDynamic(&deleteBtn.Object, handler, deleteCb)
 		v.detailBox.Append(&deleteBtn.Widget)
 	}
 
@@ -794,7 +794,7 @@ func (v *View) renderForm(item vault.Item) {
 		idleAddOnce(func() { v.render() })
 	}
 	handler := backBtn.ConnectClicked(&backClickedCb)
-	v.retainDynamic(&backBtn.Widget.InitiallyUnowned.Object, handler, backClickedCb)
+	v.retainDynamic(&backBtn.Object, handler, backClickedCb)
 	v.formBox.Append(&backBtn.Widget)
 
 	// Scrollable content area
@@ -1045,7 +1045,7 @@ func (v *View) renderForm(item vault.Item) {
 		}()
 	}
 	handler1 := saveBtn.ConnectClicked(&saveCb)
-	v.retainDynamic(&saveBtn.Widget.InitiallyUnowned.Object, handler1, saveCb)
+	v.retainDynamic(&saveBtn.Object, handler1, saveCb)
 	formContent.Append(&saveBtn.Widget)
 }
 

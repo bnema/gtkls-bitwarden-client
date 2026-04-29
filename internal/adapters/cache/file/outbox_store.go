@@ -157,27 +157,27 @@ func (s *OutboxStore) Save(ctx context.Context, key []byte, mutations []coresync
 	defer f.Close() //nolint:errcheck
 
 	if _, err := f.Write(data); err != nil {
-		os.Remove(tmpFile) // best-effort cleanup
+		_ = os.Remove(tmpFile) // best-effort cleanup
 		return err
 	}
 
 	if err := f.Sync(); err != nil {
-		os.Remove(tmpFile)
+		_ = os.Remove(tmpFile)
 		return err
 	}
 
 	if err := f.Chmod(0600); err != nil {
-		os.Remove(tmpFile)
+		_ = os.Remove(tmpFile)
 		return err
 	}
 
 	if err := ctx.Err(); err != nil {
-		os.Remove(tmpFile)
+		_ = os.Remove(tmpFile)
 		return err
 	}
 
 	if err := f.Close(); err != nil {
-		os.Remove(tmpFile)
+		_ = os.Remove(tmpFile)
 		return err
 	}
 
