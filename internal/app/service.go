@@ -782,6 +782,16 @@ func (s *Service) ResolveConflict(ctx context.Context, conflictID string, resolu
 
 			payload, _ := json.Marshal(dup)
 			s.appendOutboxLocked(coresync.MutationCreate, dup.ID, payload)
+
+			// The original local mutation has been converted into a duplicate local
+			// create, so remove mutations targeting the remote-resolved original.
+			kept := s.outbox[:0]
+			for _, mutation := range s.outbox {
+				if mutation.ItemID != conflict.ItemID {
+					kept = append(kept, mutation)
+				}
+			}
+			s.outbox = kept
 		}
 	}
 

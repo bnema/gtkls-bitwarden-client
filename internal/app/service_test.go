@@ -897,16 +897,12 @@ func TestResolveConflictDuplicateLocalQueuesCreate(t *testing.T) {
 	require.Contains(t, duplicate.ID, "local-", "duplicate should have local ID")
 	require.Equal(t, vault.SyncStatusPending, duplicate.SyncStatus, "duplicate should be pending")
 
-	// Verify a create mutation was queued for the duplicate.
+	// Verify a create mutation was queued for the duplicate, and the original
+	// conflicting update was removed so it cannot replay/re-conflict.
 	pending := svc.pendingMutationsForTest()
-	foundCreate := false
-	for _, m := range pending {
-		if m.Kind == coresync.MutationCreate && m.ItemID == duplicate.ID {
-			foundCreate = true
-			break
-		}
-	}
-	require.True(t, foundCreate, "expected a create mutation for the duplicate item")
+	require.Len(t, pending, 1)
+	require.Equal(t, coresync.MutationCreate, pending[0].Kind)
+	require.Equal(t, duplicate.ID, pending[0].ItemID)
 
 	// Verify no conflicts remain.
 	require.Len(t, svc.conflictsForTest(), 0)
