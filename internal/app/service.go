@@ -137,7 +137,7 @@ func (s *Service) loadCacheData(ctx context.Context, key []byte) (items []vault.
 			return nil, nil, nil, false, fmt.Errorf("cache decrypt: %w", err)
 		}
 	} else {
-		ciphertext = snap.VaultCiphertext
+		return nil, nil, nil, false, fmt.Errorf("cache decrypt: secretbox unavailable")
 	}
 
 	var plain cache.PlainSnapshot

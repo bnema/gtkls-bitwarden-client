@@ -18,7 +18,7 @@ safety:
 		echo "unexpected disk persistence pattern found"; \
 		exit 1; \
 	fi
-	@if [ -d internal ] && grep -RInE --exclude='*_test.go' 'MkdirAll' internal | grep -v 'internal/adapters/cache/file/store.go' | grep -v 'internal/adapters/config/viper/manager.go'; then \
+	@if [ -d internal ] && grep -RInE --exclude='*_test.go' 'MkdirAll' internal | grep -v 'internal/adapters/cache/file/store.go' | grep -v 'internal/adapters/cache/file/outbox_store.go' | grep -v 'internal/adapters/config/viper/manager.go'; then \
 		echo "unexpected directory creation outside cache/config adapters"; \
 		exit 1; \
 	fi
