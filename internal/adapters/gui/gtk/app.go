@@ -12,6 +12,7 @@ import (
 	gtklib "github.com/bnema/puregotk/v4/gtk"
 
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/gui/layershell"
+	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/gui/omnibox"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/gui/theme"
 	coretheme "github.com/bnema/gtk4-layershell-bitwarden/internal/core/theme"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/in"
@@ -69,7 +70,7 @@ func (o *Overlay) Run(ctx context.Context) error {
 
 	app := gtklib.NewApplication(&appID, gio.GApplicationNonUniqueValue)
 
-	var statusLabel *gtklib.Label
+	var ob *omnibox.View
 
 	activateCb := func(_ gio.Application) {
 		window := gtklib.NewApplicationWindow(app)
@@ -100,26 +101,23 @@ func (o *Overlay) Run(ctx context.Context) error {
 			gtklib.StyleContextAddProviderForDisplay(display, cssProvider, 800)
 		}
 
-		// Center a box with root CSS classes.
+		// Center the omnibox root box.
 		centerBox := gtklib.NewBox(gtklib.OrientationVerticalValue, 0)
 		centerBox.SetHalign(gtklib.AlignCenterValue)
 		centerBox.SetValign(gtklib.AlignCenterValue)
 
 		styleCtx := centerBox.GetStyleContext()
 		styleCtx.AddClass("glsbw-window")
-		styleCtx.AddClass("glsbw-omnibox")
 
-		// Placeholder title label.
-		titleStr := "Bitwarden"
-		titleLabel := gtklib.NewLabel(&titleStr)
-		centerBox.Append(&titleLabel.Widget)
-
-		// Status label, updated by events.
-		lockedStr := "Locked"
-		statusLabel = gtklib.NewLabel(&lockedStr)
-		centerBox.Append(&statusLabel.Widget)
+		// Create the omnibox View. It builds its own widgets and manages its
+		// own lifecycle via the context.
+		ob = omnibox.New(ctx, o.service, func() { app.Quit() }, o.retain)
+		centerBox.Append(&ob.Root.Widget)
 
 		window.SetChild(&centerBox.Widget)
+
+		// Attach keyboard controller to the window.
+		ob.AttachKeyController(&window.Window)
 
 		// Close request quits the application.
 		closeCb := func(_ gtklib.Window) bool {
@@ -130,30 +128,17 @@ func (o *Overlay) Run(ctx context.Context) error {
 		window.ConnectCloseRequest(&closeCb)
 
 		window.Show()
+
+		// Focus the omnibox.
+		ob.GrabFocus()
 	}
 	o.retain(activateCb)
 	app.ConnectActivate(&activateCb)
 
-	// Subscribe to service events in a goroutine.
-	eventCh := o.service.Events()
+	// Handle context cancellation (quit the app).
 	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				idleAddOnce(func() { app.Quit() })
-				return
-			case evt, ok := <-eventCh:
-				if !ok {
-					return
-				}
-				statusVM := StatusFromEvent(evt)
-				idleAddOnce(func() {
-					if statusLabel != nil {
-						statusLabel.SetLabel(statusVM.Text)
-					}
-				})
-			}
-		}
+		<-ctx.Done()
+		idleAddOnce(func() { app.Quit() })
 	}()
 
 	app.Run(0, nil)
