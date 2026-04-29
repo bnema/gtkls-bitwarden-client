@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -26,6 +27,9 @@ type Options struct {
 	// RunOverlay runs the application overlay. If nil, the default GTK overlay
 	// is created and started. Injecting a test double keeps tests headless.
 	RunOverlay func(context.Context, in.AppService) error
+	// ComposeService builds the application service. If nil, production adapters
+	// are used. Injecting a test double keeps auth command tests offline.
+	ComposeService func(context.Context, *coreconfig.Config, string, string) (in.AppService, error)
 }
 
 // NewRootCommand creates the root CLI command with all subcommands.
@@ -47,7 +51,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 			cachePath, outboxPath := xdg.Default().CacheFile(), xdg.Default().OutboxFile()
 
 			// Compose application service.
-			svc, err := composeService(cmd.Context(), cfg, cachePath, outboxPath)
+			svc, err := composeAppService(opts, cmd.Context(), cfg, cachePath, outboxPath)
 			if err != nil {
 				return fmt.Errorf("compose service: %w", err)
 			}
@@ -72,7 +76,13 @@ func NewRootCommand(opts Options) *cobra.Command {
 				}
 			}
 
-			return runner(cmd.Context(), svc)
+			if err := runner(cmd.Context(), svc); err != nil {
+				if strings.Contains(err.Error(), "layer-shell is not available") {
+					return fmt.Errorf("%w\n\nGTK layer-shell is not available in this session. Use `gtk4-layershell-bitwarden login`, `unlock`, or `status` from a terminal, or run the overlay inside a layer-shell-capable Wayland compositor", err)
+				}
+				return err
+			}
+			return nil
 		},
 	}
 
@@ -80,6 +90,10 @@ func NewRootCommand(opts Options) *cobra.Command {
 	cachePath, outboxPath := xdg.Default().CacheFile(), xdg.Default().OutboxFile()
 
 	root.AddCommand(newConfigCmd(opts))
+	root.AddCommand(newLoginCmd(opts, cachePath, outboxPath))
+	root.AddCommand(newUnlockCmd(opts, cachePath, outboxPath))
+	root.AddCommand(newStatusCmd(opts, cachePath))
+	root.AddCommand(newLockCmd())
 	root.AddCommand(newCacheCmd(cachePath, outboxPath))
 	root.AddCommand(newLogoutCmd(cachePath, outboxPath))
 	root.AddCommand(newSyncCmd())
@@ -93,6 +107,13 @@ func NewRootCommand(opts Options) *cobra.Command {
 
 // composeService builds all application dependencies and returns the service.
 // cachePath and outboxPath should be computed once by the caller.
+func composeAppService(opts Options, ctx context.Context, cfg *coreconfig.Config, cachePath, outboxPath string) (in.AppService, error) {
+	if opts.ComposeService != nil {
+		return opts.ComposeService(ctx, cfg, cachePath, outboxPath)
+	}
+	return composeService(ctx, cfg, cachePath, outboxPath)
+}
+
 func composeService(ctx context.Context, cfg *coreconfig.Config, cachePath, outboxPath string) (in.AppService, error) {
 	// Logger: discard by default (nil → io.Discard).
 	logger := loggeradapter.New(nil)

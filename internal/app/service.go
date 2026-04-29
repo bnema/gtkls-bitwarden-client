@@ -399,6 +399,17 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	s.state = auth.LockStateLocked
 	s.mu.Unlock()
 
+	savesDone := make(chan struct{})
+	go func() {
+		s.saveWG.Wait()
+		close(savesDone)
+	}()
+	select {
+	case <-savesDone:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
 	s.eventMu.Lock()
 	if !s.eventsClosed {
 		close(s.events)
@@ -509,7 +520,9 @@ func (s *Service) saveCacheAsyncLocked() {
 		return
 	}
 
+	s.saveWG.Add(1)
 	go func() {
+		defer s.saveWG.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 

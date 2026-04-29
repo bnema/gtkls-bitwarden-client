@@ -74,10 +74,45 @@ mkdir -p ~/.config/gtk4-layershell-bitwarden
 cp configs/config.example.toml ~/.config/gtk4-layershell-bitwarden/config.toml
 ```
 
-Minimum required setting: `bitwarden.email`.
+Minimum required setting for non-interactive unlock: `bitwarden.email`.
 
 A missing config file is **not** an error — built-in defaults are used and
-the config can be written later through the GUI.
+the config can be written later through the CLI or GUI.
+
+---
+
+## Login / Unlock CLI Flow
+
+The CLI mirrors the official Bitwarden CLI shape for local auth commands:
+
+```sh
+gtk4-layershell-bitwarden login you@example.com
+gtk4-layershell-bitwarden unlock
+gtk4-layershell-bitwarden status
+gtk4-layershell-bitwarden lock
+gtk4-layershell-bitwarden logout
+```
+
+`login` prompts for missing email and master password, authenticates with
+Bitwarden, stores the email in config, runs initial sync, and writes the
+encrypted cache/outbox under the XDG cache directory. `unlock` uses the
+configured email and prompts for the master password. Both commands support:
+
+```sh
+--raw                 # print only a generated session key
+--passwordenv NAME    # read master password from an environment variable
+--passwordfile PATH   # read master password from a file
+--no-sync             # authenticate/unlock without waiting for initial sync
+```
+
+As with `bw`, successful `login` / `unlock` prints an example `BW_SESSION`
+export. For v0.1.0, this session key is process-local guidance for CLI
+compatibility; persistent vault protection remains the master-password-derived
+encrypted cache key, and the GUI still prompts for the master password.
+
+If the GTK overlay is launched outside a layer-shell-capable Wayland session,
+the command exits with guidance to use `login`, `unlock`, or `status` from the
+terminal instead.
 
 ---
 
@@ -153,8 +188,8 @@ phase.
     A `LogFile()` path helper exists for future use; the current logger
     defaults to discard unless injected.
 - **Encrypted cache**: The vault snapshot and outbox are stored on disk
-  encrypted with a key derived from the master password (SHA-256). See
-  `internal/adapters/cache/`.
+  encrypted with a key derived from the master password using Argon2id and a
+  persisted per-cache salt. See `internal/adapters/cache/`.
 - **No plaintext search index**: The in-memory search index (`vault.BuildIndex`)
   is never written to disk. On relock it is dropped.
 - **File permissions**: Config directory is created with `0700`, config file

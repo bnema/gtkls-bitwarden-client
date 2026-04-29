@@ -248,10 +248,13 @@ func (r *fakeRemote) DeleteAttachment(_ context.Context, _, _ string) error {
 }
 
 type fakeCache struct {
-	mu       sync.Mutex
-	data     *cache.Snapshot
-	loadErr  error
-	loadCall int
+	mu          sync.Mutex
+	data        *cache.Snapshot
+	loadErr     error
+	loadCall    int
+	saveStarted chan struct{}
+	saveBlock   chan struct{}
+	saveCalled  int
 }
 
 func (c *fakeCache) Load(_ context.Context) (cache.Snapshot, error) {
@@ -267,7 +270,26 @@ func (c *fakeCache) Load(_ context.Context) (cache.Snapshot, error) {
 	return cache.Snapshot{}, nil
 }
 
-func (c *fakeCache) Save(_ context.Context, _ cache.Snapshot) error {
+func (c *fakeCache) Save(ctx context.Context, _ cache.Snapshot) error {
+	c.mu.Lock()
+	c.saveCalled++
+	started := c.saveStarted
+	block := c.saveBlock
+	c.mu.Unlock()
+
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
+	if block != nil {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	return nil
 }
 
@@ -1201,6 +1223,46 @@ func TestResolveConflictDuplicateLocalQueuesCreate(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Event safety tests
 // ---------------------------------------------------------------------------
+
+func TestShutdownWaitsForAsyncCacheSave(t *testing.T) {
+	cacheStore := &fakeCache{saveStarted: make(chan struct{}, 1), saveBlock: make(chan struct{})}
+	remote := &fakeRemote{
+		revisionRev: "rev-1",
+		syncRev:     "rev-1",
+		syncItems: []vault.Item{{
+			ID:           "item-1",
+			Name:         "Example",
+			Type:         vault.ItemTypeLogin,
+			RevisionDate: time.Now(),
+		}},
+	}
+	svc := NewService(Deps{Remote: remote, Cache: cacheStore, SecretBox: &fakeSecretBox{}, Config: coreconfig.Default()})
+
+	require.NoError(t, svc.Unlock(context.Background(), "me@example.com", "password"))
+	require.Eventually(t, func() bool {
+		select {
+		case <-cacheStore.saveStarted:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, 10*time.Millisecond)
+
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- svc.Shutdown(context.Background()) }()
+
+	require.Never(t, func() bool {
+		select {
+		case <-shutdownDone:
+			return true
+		default:
+			return false
+		}
+	}, 50*time.Millisecond, 5*time.Millisecond, "shutdown should wait for in-flight cache save")
+
+	close(cacheStore.saveBlock)
+	require.NoError(t, <-shutdownDone)
+}
 
 func TestEmitAfterShutdownDoesNotPanic(t *testing.T) {
 	svc := NewService(Deps{})

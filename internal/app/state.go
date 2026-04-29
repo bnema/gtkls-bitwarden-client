@@ -25,6 +25,7 @@ type Deps struct {
 // Service implements the application's core business logic.
 type Service struct {
 	mu            sync.Mutex
+	saveWG        sync.WaitGroup
 	eventMu       sync.RWMutex
 	eventsClosed  bool
 	cfg           *config.Config
