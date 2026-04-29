@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"sync"
 
 	"github.com/bnema/puregotk/v4/gdk"
 	"github.com/bnema/puregotk/v4/gio"
@@ -31,6 +32,9 @@ type Overlay struct {
 	service   in.AppService
 	opts      Options
 	callbacks []interface{}
+
+	runMu  sync.Mutex
+	runErr error
 }
 
 // NewOverlay creates a new Overlay with the given service and options.
@@ -84,10 +88,16 @@ func (o *Overlay) Run(ctx context.Context) error {
 		if namespace == "" {
 			namespace = "gtk4-layershell-bitwarden"
 		}
-		layershell.InitOverlay(&window.Window, layershell.OverlayConfig{
+		if !layershell.InitOverlay(&window.Window, layershell.OverlayConfig{
 			Namespace:         namespace,
 			ExclusiveKeyboard: true,
-		})
+		}) {
+			o.runMu.Lock()
+			o.runErr = fmt.Errorf("gtk overlay: layer-shell is not available")
+			o.runMu.Unlock()
+			app.Quit()
+			return
+		}
 
 		// Attach CSS theming.
 		cssProvider := gtklib.NewCssProvider()
@@ -143,6 +153,13 @@ func (o *Overlay) Run(ctx context.Context) error {
 
 	app.Run(0, nil)
 
+	o.runMu.Lock()
+	err := o.runErr
+	o.runMu.Unlock()
+
+	if err != nil {
+		return err
+	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}

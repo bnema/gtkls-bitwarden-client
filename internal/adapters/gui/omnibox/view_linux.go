@@ -42,6 +42,20 @@ type View struct {
 	currentItem vault.Item
 	searchTimer *time.Timer
 	searchLock  sync.Mutex
+
+	dynamicCallbacks []interface{}
+}
+
+// retainDynamic appends cb to dynamicCallbacks to prevent GC from collecting
+// GTK callbacks that are created dynamically (renderDetail/renderForm).
+func (v *View) retainDynamic(cb interface{}) {
+	v.dynamicCallbacks = append(v.dynamicCallbacks, cb)
+}
+
+// resetDynamicCallbacks clears the dynamic callbacks slice. Must be called
+// before rebuilding dynamic widgets so old callbacks can be GC'd.
+func (v *View) resetDynamicCallbacks() {
+	v.dynamicCallbacks = nil
 }
 
 // New creates a new View, builds all GTK widgets, and starts the event listener.
@@ -137,7 +151,8 @@ func (v *View) buildUI() {
 	searchReleasedCb := func(_ gtklib.EventControllerKey, keyval uint, _ uint, _ gdk.ModifierType) {
 		kv := int(keyval)
 		if isSearchKey(kv) {
-			v.debounceSearch()
+			query := v.searchEntry.GetText()
+			v.debounceSearch(query)
 		}
 	}
 	v.retain(searchReleasedCb)
@@ -185,64 +200,102 @@ func (v *View) AttachKeyController(window *gtklib.Window) {
 	ctrl := gtklib.NewEventControllerKey()
 	pressedCb := func(_ gtklib.EventControllerKey, keyval uint, _ uint, mod gdk.ModifierType) bool {
 		kv := int(keyval)
-		v.mu.Lock()
-		defer v.mu.Unlock()
 
-		switch v.state.Mode {
-		case ModeUnlock:
+		v.mu.Lock()
+		mode := v.state.Mode
+
+		handleUnlock := func() bool {
 			if kv == gdk.KEY_Escape {
+				v.mu.Unlock()
 				idleAddOnce(v.quit)
 				return true
 			}
-		case ModeSearch:
+			v.mu.Unlock()
+			return false
+		}
+
+		handleSearch := func() bool {
 			switch kv {
 			case gdk.KEY_Up:
 				v.state.Move(-1)
+				v.mu.Unlock()
 				idleAddOnce(func() { v.renderRows() })
 				return true
 			case gdk.KEY_Down:
 				v.state.Move(1)
+				v.mu.Unlock()
 				idleAddOnce(func() { v.renderRows() })
 				return true
 			case gdk.KEY_Return, gdk.KEY_KP_Enter:
 				if mod&gdk.ControlMaskValue != 0 {
 					v.state.OpenDetail()
 					detailID := v.state.DetailID
+					v.mu.Unlock()
 					v.loadDetail(detailID)
 					idleAddOnce(func() { v.render() })
 					return true
 				}
+				v.mu.Unlock()
 				return false
 			case gdk.KEY_n:
 				if mod&gdk.ControlMaskValue != 0 {
-					v.mu.Lock()
 					v.currentItem = vault.Item{Type: vault.ItemTypeLogin}
 					v.state.Mode = ModeForm
+					item := v.currentItem
 					v.mu.Unlock()
 					idleAddOnce(func() {
-						v.renderForm(v.currentItem)
+						v.renderForm(item)
 						v.render()
 					})
 					return true
 				}
+				v.mu.Unlock()
+				return false
 			case gdk.KEY_Escape:
+				v.mu.Unlock()
 				idleAddOnce(v.quit)
 				return true
-			}
-		case ModeDetail:
-			if kv == gdk.KEY_Escape || kv == gdk.KEY_BackSpace {
-				v.state.Back()
-				idleAddOnce(func() { v.render() })
-				return true
-			}
-		case ModeForm:
-			if kv == gdk.KEY_Escape || kv == gdk.KEY_BackSpace {
-				v.state.Back()
-				idleAddOnce(func() { v.render() })
-				return true
+			default:
+				v.mu.Unlock()
+				return false
 			}
 		}
-		return false
+
+		handleDetail := func() bool {
+			if kv == gdk.KEY_Escape || kv == gdk.KEY_BackSpace {
+				v.state.Back()
+				v.mu.Unlock()
+				idleAddOnce(func() { v.render() })
+				return true
+			}
+			v.mu.Unlock()
+			return false
+		}
+
+		handleForm := func() bool {
+			if kv == gdk.KEY_Escape || kv == gdk.KEY_BackSpace {
+				v.state.Back()
+				v.mu.Unlock()
+				idleAddOnce(func() { v.render() })
+				return true
+			}
+			v.mu.Unlock()
+			return false
+		}
+
+		switch mode {
+		case ModeUnlock:
+			return handleUnlock()
+		case ModeSearch:
+			return handleSearch()
+		case ModeDetail:
+			return handleDetail()
+		case ModeForm:
+			return handleForm()
+		default:
+			v.mu.Unlock()
+			return false
+		}
 	}
 	v.retain(pressedCb)
 	ctrl.ConnectKeyPressed(&pressedCb)
@@ -341,19 +394,14 @@ func (v *View) loadAllItems() {
 	}()
 }
 
-// debounceSearch cancels any pending search and schedules a new one.
-func (v *View) debounceSearch() {
+// debounceSearch cancels any pending search and schedules a new one with the
+// given query. The query must be read on the GTK thread before calling this.
+func (v *View) debounceSearch(query string) {
 	v.mu.Lock()
 	if v.searchTimer != nil {
 		v.searchTimer.Stop()
 	}
 	v.searchTimer = time.AfterFunc(150*time.Millisecond, func() {
-		query := ""
-		idleAddOnce(func() {
-			v.mu.Lock()
-			query = v.searchEntry.GetText()
-			v.mu.Unlock()
-		})
 		if query == "" {
 			v.loadAllItems()
 			return
@@ -516,7 +564,7 @@ func (v *View) renderDetail(detail Detail) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
-	// Remove all existing children.
+	// Remove all existing children and clear dynamic callbacks.
 	for {
 		child := v.detailBox.GetFirstChild()
 		if child == nil || child.Ptr == 0 {
@@ -524,6 +572,7 @@ func (v *View) renderDetail(detail Detail) {
 		}
 		v.detailBox.Remove(child)
 	}
+	v.resetDynamicCallbacks()
 
 	// Back button
 	backBtn := gtklib.NewButtonWithLabel("← Back")
@@ -533,7 +582,7 @@ func (v *View) renderDetail(detail Detail) {
 		v.mu.Unlock()
 		idleAddOnce(func() { v.render() })
 	}
-	v.retain(backClickedCb)
+	v.retainDynamic(backClickedCb)
 	backBtn.ConnectClicked(&backClickedCb)
 	v.detailBox.Append(&backBtn.Widget)
 
@@ -631,13 +680,14 @@ func (v *View) renderDetail(detail Detail) {
 	editCb := func(_ gtklib.Button) {
 		v.mu.Lock()
 		v.state.Mode = ModeForm
+		item := v.currentItem
 		v.mu.Unlock()
 		idleAddOnce(func() {
-			v.renderForm(v.currentItem)
+			v.renderForm(item)
 			v.render()
 		})
 	}
-	v.retain(editCb)
+	v.retainDynamic(editCb)
 	editBtn.ConnectClicked(&editCb)
 	v.detailBox.Append(&editBtn.Widget)
 
@@ -658,7 +708,7 @@ func (v *View) renderDetail(detail Detail) {
 				})
 			}()
 		}
-		v.retain(trashCb)
+		v.retainDynamic(trashCb)
 		trashBtn.ConnectClicked(&trashCb)
 		v.detailBox.Append(&trashBtn.Widget)
 	} else {
@@ -677,7 +727,7 @@ func (v *View) renderDetail(detail Detail) {
 				})
 			}()
 		}
-		v.retain(restoreCb)
+		v.retainDynamic(restoreCb)
 		restoreBtn.ConnectClicked(&restoreCb)
 		v.detailBox.Append(&restoreBtn.Widget)
 
@@ -696,7 +746,7 @@ func (v *View) renderDetail(detail Detail) {
 				})
 			}()
 		}
-		v.retain(deleteCb)
+		v.retainDynamic(deleteCb)
 		deleteBtn.ConnectClicked(&deleteCb)
 		v.detailBox.Append(&deleteBtn.Widget)
 	}
@@ -709,7 +759,7 @@ func (v *View) renderForm(item vault.Item) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
-	// Clear existing children.
+	// Clear existing children and dynamic callbacks.
 	for {
 		child := v.formBox.GetFirstChild()
 		if child == nil || child.Ptr == 0 {
@@ -717,6 +767,7 @@ func (v *View) renderForm(item vault.Item) {
 		}
 		v.formBox.Remove(child)
 	}
+	v.resetDynamicCallbacks()
 
 	editable := EditableFromItem(item)
 
@@ -728,7 +779,7 @@ func (v *View) renderForm(item vault.Item) {
 		v.mu.Unlock()
 		idleAddOnce(func() { v.render() })
 	}
-	v.retain(backClickedCb)
+	v.retainDynamic(backClickedCb)
 	backBtn.ConnectClicked(&backClickedCb)
 	v.formBox.Append(&backBtn.Widget)
 
@@ -902,10 +953,14 @@ func (v *View) renderForm(item vault.Item) {
 	notesEntry.SetText(editable.Notes)
 	formContent.Append(&notesEntry.Widget)
 
+	// Snapshot current item under lock for the save goroutine.
+	current := v.currentItem
+	isUpdate := current.ID != ""
+
 	// Save button
 	saveBtn := gtklib.NewButtonWithLabel("Save")
 	saveCb := func(_ gtklib.Button) {
-		e := EditableFromItem(v.currentItem)
+		e := EditableFromItem(current)
 		e.Name = nameEntry.GetText()
 		e.Notes = notesEntry.GetText()
 
@@ -948,10 +1003,10 @@ func (v *View) renderForm(item vault.Item) {
 		go func() {
 			var result vault.Item
 			var err error
-			if v.currentItem.ID == "" {
-				result, err = v.service.Create(context.Background(), updated)
+			if isUpdate {
+				result, err = v.service.Update(context.Background(), current.ID, updated)
 			} else {
-				result, err = v.service.Update(context.Background(), v.currentItem.ID, updated)
+				result, err = v.service.Create(context.Background(), updated)
 			}
 			if err != nil {
 				idleAddOnce(func() {
@@ -975,7 +1030,7 @@ func (v *View) renderForm(item vault.Item) {
 			})
 		}()
 	}
-	v.retain(saveCb)
+	v.retainDynamic(saveCb)
 	saveBtn.ConnectClicked(&saveCb)
 	formContent.Append(&saveBtn.Widget)
 }
