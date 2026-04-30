@@ -375,7 +375,6 @@ func (s *Service) unlock(ctx context.Context, email, password string, prompt aut
 		s.items = loadedItems
 		s.folders = loadedFolders
 		s.outbox = outboxMutations
-		s.index = vault.BuildIndex(loadedItems)
 	}
 	// Copy cache key for outbox persistence.
 	s.cacheKey = make([]byte, len(cacheKey))
@@ -489,6 +488,82 @@ func (s *Service) loadCacheData(ctx context.Context, password string) (items []v
 	return items, folders, outbox, key, salt, true, nil
 }
 
+// loadCachedVaultWithKey loads and decrypts the cache snapshot using the
+// provided key (typically s.cacheKey from a PIN unlock envelope), returning
+// items, folders, and outbox mutations. It zeros plaintext buffers after
+// decode and does not install any state on the service. If the cache is
+// missing, empty, or unavailable, nil slices and nil error are returned.
+func (s *Service) loadCachedVaultWithKey(ctx context.Context, key []byte) ([]vault.Item, []vault.Folder, []coresync.OutboxMutation, error) {
+	if s.deps.Cache == nil || s.deps.SecretBox == nil {
+		return nil, nil, nil, nil
+	}
+	if len(key) == 0 {
+		return nil, nil, nil, nil
+	}
+
+	snap, err := s.deps.Cache.Load(ctx)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil, nil, nil
+		}
+		return nil, nil, nil, fmt.Errorf("cache load: %w", err)
+	}
+
+	// Empty snapshot: no data to return.
+	if snap.Version == 0 && snap.AccountHash == "" && len(snap.VaultCiphertext) == 0 {
+		return nil, nil, nil, nil
+	}
+
+	if err := cache.ValidateSnapshot(snap); err != nil {
+		return nil, nil, nil, fmt.Errorf("cache validation: %w", err)
+	}
+
+	plaintext, err := s.deps.SecretBox.Open(snap.VaultCiphertext, key)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("cache decrypt: %w", err)
+	}
+
+	var plain cache.PlainSnapshot
+	if err := json.Unmarshal(plaintext, &plain); err != nil {
+		return nil, nil, nil, fmt.Errorf("cache decode: %w", err)
+	}
+
+	// Zero plaintext bytes after decode.
+	for i := range plaintext {
+		plaintext[i] = 0
+	}
+
+	var items []vault.Item
+	if err := json.Unmarshal(plain.ItemsJSON, &items); err != nil {
+		return nil, nil, nil, fmt.Errorf("cache items decode: %w", err)
+	}
+
+	var folders []vault.Folder
+	if err := json.Unmarshal(plain.FoldersJSON, &folders); err != nil {
+		return nil, nil, nil, fmt.Errorf("cache folders decode: %w", err)
+	}
+
+	var outbox []coresync.OutboxMutation
+	if len(plain.OutboxJSON) > 0 {
+		if err := json.Unmarshal(plain.OutboxJSON, &outbox); err != nil {
+			return nil, nil, nil, fmt.Errorf("cache outbox decode: %w", err)
+		}
+	}
+
+	// Zero plain JSON fields after decode.
+	for i := range plain.ItemsJSON {
+		plain.ItemsJSON[i] = 0
+	}
+	for i := range plain.FoldersJSON {
+		plain.FoldersJSON[i] = 0
+	}
+	for i := range plain.OutboxJSON {
+		plain.OutboxJSON[i] = 0
+	}
+
+	return items, folders, outbox, nil
+}
+
 // Lock transitions the service from unlocked to locked.
 func (s *Service) Lock(ctx context.Context) error {
 	s.mu.Lock()
@@ -531,45 +606,99 @@ func (s *Service) Lock(ctx context.Context) error {
 }
 
 // Search searches vault items by query. Returns ErrLocked if not unlocked.
+// Items are loaded from the encrypted cache when available, or from resident
+// state as a fallback. A local search index is built for the query and
+// discarded afterward; no resident index is consulted or modified.
 func (s *Service) Search(ctx context.Context, query string, limit int) ([]vault.ScoredItem, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.state != auth.LockStateUnlocked {
+		s.mu.Unlock()
 		return nil, cerrors.ErrLocked
 	}
+	// Copy cache key and fallback items under lock, then release.
+	cacheKey := make([]byte, len(s.cacheKey))
+	copy(cacheKey, s.cacheKey)
+	residentItems := make([]vault.Item, len(s.items))
+	copy(residentItems, s.items)
+	s.mu.Unlock()
 
-	if s.index == nil {
+	var items []vault.Item
+	if len(cacheKey) > 0 {
+		if loaded, _, _, err := s.loadCachedVaultWithKey(ctx, cacheKey); err == nil && len(loaded) > 0 {
+			items = loaded
+		}
+	}
+	if items == nil {
+		items = residentItems
+	}
+
+	if len(items) == 0 {
 		return nil, nil
 	}
 
-	return s.index.Search(query, limit), nil
+	// Build a local index scoped to this call; do not install on Service.
+	idx := vault.BuildIndex(items)
+	return idx.Search(query, limit), nil
 }
 
 // Items returns a copy of all vault items. Returns ErrLocked if not unlocked.
+// Items are loaded from the encrypted cache when available, or from resident
+// state as a fallback.
 func (s *Service) Items(ctx context.Context) ([]vault.Item, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.state != auth.LockStateUnlocked {
+		s.mu.Unlock()
 		return nil, cerrors.ErrLocked
 	}
+	// Copy cache key and fallback items under lock, then release.
+	cacheKey := make([]byte, len(s.cacheKey))
+	copy(cacheKey, s.cacheKey)
+	residentItems := make([]vault.Item, len(s.items))
+	copy(residentItems, s.items)
+	s.mu.Unlock()
 
-	items := make([]vault.Item, len(s.items))
-	copy(items, s.items)
-	return items, nil
-}
-
-// Get returns a single vault item by ID.
-func (s *Service) Get(ctx context.Context, id string) (vault.Item, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.state != auth.LockStateUnlocked {
-		return vault.Item{}, cerrors.ErrLocked
+	var items []vault.Item
+	if len(cacheKey) > 0 {
+		if loaded, _, _, err := s.loadCachedVaultWithKey(ctx, cacheKey); err == nil && len(loaded) > 0 {
+			items = loaded
+		}
+	}
+	if items == nil {
+		items = residentItems
 	}
 
-	for _, item := range s.items {
+	result := make([]vault.Item, len(items))
+	copy(result, items)
+	return result, nil
+}
+
+// Get returns a single vault item by ID. Items are loaded from the encrypted
+// cache when available, or from resident state as a fallback. Returns
+// ErrNotFound when the item is not found.
+func (s *Service) Get(ctx context.Context, id string) (vault.Item, error) {
+	s.mu.Lock()
+	if s.state != auth.LockStateUnlocked {
+		s.mu.Unlock()
+		return vault.Item{}, cerrors.ErrLocked
+	}
+	// Copy cache key and fallback items under lock, then release.
+	cacheKey := make([]byte, len(s.cacheKey))
+	copy(cacheKey, s.cacheKey)
+	residentItems := make([]vault.Item, len(s.items))
+	copy(residentItems, s.items)
+	s.mu.Unlock()
+
+	var items []vault.Item
+	if len(cacheKey) > 0 {
+		if loaded, _, _, err := s.loadCachedVaultWithKey(ctx, cacheKey); err == nil && len(loaded) > 0 {
+			items = loaded
+		}
+	}
+	if items == nil {
+		items = residentItems
+	}
+
+	for _, item := range items {
 		if item.ID == id {
 			return item, nil
 		}

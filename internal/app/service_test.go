@@ -2508,3 +2508,150 @@ func TestUnlockWithPINRequiresDeps(t *testing.T) {
 		require.ErrorIs(t, err, coreerrors.ErrUnsupported)
 	})
 }
+
+// ---------------------------------------------------------------------------
+// Bounded plaintext vault read tests
+// ---------------------------------------------------------------------------
+
+// buildCacheSnapshotWithKey creates a cache.Snapshot containing items and
+// folders as a PlainSnapshot, "encrypted" (via SecretBox) with the given key.
+// Uses fakeSecretBox so encryption is identity; the key is recorded but
+// decrypt always succeeds with any matching-length key.
+func buildCacheSnapshotWithKey(t *testing.T, key []byte, items []vault.Item, folders []vault.Folder) cache.Snapshot {
+	t.Helper()
+
+	itemsJSON, err := json.Marshal(items)
+	require.NoError(t, err)
+
+	foldersJSON, err := json.Marshal(folders)
+	require.NoError(t, err)
+
+	plain := cache.PlainSnapshot{
+		AccountHash: "test-account-hash",
+		SavedAt:     time.Now(),
+		ItemsJSON:   itemsJSON,
+		FoldersJSON: foldersJSON,
+	}
+
+	plainJSON, err := json.Marshal(plain)
+	require.NoError(t, err)
+
+	box := &fakeSecretBox{}
+	ciphertext, err := box.Seal(plainJSON, key)
+	require.NoError(t, err)
+
+	return cache.Snapshot{
+		Version:         cache.Version,
+		AccountHash:     "test-account-hash",
+		SavedAt:         time.Now(),
+		VaultCiphertext: ciphertext,
+	}
+}
+
+func TestSearchDoesNotLeavePlaintextItemsResidentAfterOperation(t *testing.T) {
+	cacheKey := []byte("test-cache-key-32-bytes-long!")
+	gitItem := vault.Item{
+		ID:    "item-1",
+		Name:  "GitHub",
+		Type:  vault.ItemTypeLogin,
+		Login: &vault.Login{Username: "user"},
+	}
+
+	snap := buildCacheSnapshotWithKey(t, cacheKey, []vault.Item{gitItem}, nil)
+
+	svc := NewService(Deps{
+		Cache:     &fakeCache{data: &snap},
+		SecretBox: &fakeSecretBox{},
+	})
+
+	// Simulate PIN unlock: state unlocked, cache key set, no resident items/index.
+	svc.mu.Lock()
+	svc.state = auth.LockStateUnlocked
+	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
+	svc.mu.Unlock()
+
+	// Search should find the item via cache.
+	results, err := svc.Search(context.Background(), "git", 10)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "GitHub", results[0].Item.Name)
+
+	// After operation, no plaintext items/index should be resident.
+	svc.mu.Lock()
+	require.Nil(t, svc.items, "s.items should be nil after cache-only search")
+	require.Nil(t, svc.index, "s.index should be nil after cache-only search")
+	svc.mu.Unlock()
+}
+
+func TestGetDoesNotLeavePlaintextItemsResidentAfterOperation(t *testing.T) {
+	cacheKey := []byte("test-cache-key-32-bytes-long!")
+	item1 := vault.Item{
+		ID:   "item-1",
+		Name: "GitHub",
+		Type: vault.ItemTypeLogin,
+	}
+	item2 := vault.Item{
+		ID:   "item-2",
+		Name: "GitLab",
+		Type: vault.ItemTypeLogin,
+	}
+
+	snap := buildCacheSnapshotWithKey(t, cacheKey, []vault.Item{item1, item2}, nil)
+
+	svc := NewService(Deps{
+		Cache:     &fakeCache{data: &snap},
+		SecretBox: &fakeSecretBox{},
+	})
+
+	svc.mu.Lock()
+	svc.state = auth.LockStateUnlocked
+	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
+	svc.mu.Unlock()
+
+	// Get existing item.
+	item, err := svc.Get(context.Background(), "item-1")
+	require.NoError(t, err)
+	require.Equal(t, "GitHub", item.Name)
+
+	// Get non-existing item.
+	_, err = svc.Get(context.Background(), "item-999")
+	require.ErrorIs(t, err, coreerrors.ErrNotFound)
+
+	// After operation, no plaintext items/index should be resident.
+	svc.mu.Lock()
+	require.Nil(t, svc.items, "s.items should be nil after cache-only Get")
+	require.Nil(t, svc.index, "s.index should be nil after cache-only Get")
+	svc.mu.Unlock()
+}
+
+func TestItemsDoesNotLeavePlaintextItemsResidentAfterOperation(t *testing.T) {
+	cacheKey := []byte("test-cache-key-32-bytes-long!")
+	gitItem := vault.Item{
+		ID:   "item-1",
+		Name: "GitHub",
+		Type: vault.ItemTypeLogin,
+	}
+
+	snap := buildCacheSnapshotWithKey(t, cacheKey, []vault.Item{gitItem}, nil)
+
+	svc := NewService(Deps{
+		Cache:     &fakeCache{data: &snap},
+		SecretBox: &fakeSecretBox{},
+	})
+
+	svc.mu.Lock()
+	svc.state = auth.LockStateUnlocked
+	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
+	svc.mu.Unlock()
+
+	items, err := svc.Items(context.Background())
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.Equal(t, "GitHub", items[0].Name)
+
+	// After operation, no plaintext items/index should be resident.
+	svc.mu.Lock()
+	require.Nil(t, svc.items, "s.items should be nil after cache-only Items")
+	require.Nil(t, svc.index, "s.index should be nil after cache-only Items")
+	svc.mu.Unlock()
+}
