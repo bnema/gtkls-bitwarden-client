@@ -16,6 +16,7 @@ import (
 	"golang.org/x/term"
 
 	viperadapter "github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/config/viper"
+	coreauth "github.com/bnema/gtk4-layershell-bitwarden/internal/core/auth"
 	coreconfig "github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/in"
 )
@@ -125,7 +126,7 @@ func runLoginUnlock(cmd *cobra.Command, opts Options, cachePath, outboxPath stri
 	}
 	defer func() { _ = svc.Shutdown(context.Background()) }()
 
-	if err := svc.Unlock(cmd.Context(), email, password); err != nil {
+	if err := svc.UnlockWithTwoFactor(cmd.Context(), email, password, promptTwoFactorCode(cmd)); err != nil {
 		return err
 	}
 	if !auth.noSync {
@@ -152,6 +153,37 @@ func runLoginUnlock(cmd *cobra.Command, opts Options, cachePath, outboxPath stri
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "> $env:BW_SESSION=%q\n", session)
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "\nYou can also pass the session key to compatible commands with `--session` in future releases.\n")
 	return nil
+}
+
+func promptTwoFactorCode(cmd *cobra.Command) coreauth.TwoFactorPrompt {
+	return func(ctx context.Context, providers []coreauth.TwoFactorProvider) (coreauth.TwoFactorProvider, string, bool, error) {
+		provider := chooseTwoFactorProvider(providers)
+		label := string(provider)
+		if provider == coreauth.TwoFactorProviderAuthenticator {
+			label = "authenticator code"
+		}
+		code, err := promptLine(cmd.InOrStdin(), cmd.ErrOrStderr(), fmt.Sprintf("Two-step login %s: ", label))
+		if err != nil {
+			return "", "", false, err
+		}
+		code = strings.TrimSpace(code)
+		if code == "" {
+			return "", "", false, fmt.Errorf("two-factor code is required")
+		}
+		return provider, code, false, ctx.Err()
+	}
+}
+
+func chooseTwoFactorProvider(providers []coreauth.TwoFactorProvider) coreauth.TwoFactorProvider {
+	for _, provider := range providers {
+		if provider == coreauth.TwoFactorProviderAuthenticator {
+			return provider
+		}
+	}
+	if len(providers) > 0 {
+		return providers[0]
+	}
+	return coreauth.TwoFactorProviderAuthenticator
 }
 
 func resolveLoginRegion(cmd *cobra.Command, cfg *coreconfig.Config, auth authOptions) error {

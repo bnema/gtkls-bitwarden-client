@@ -1,6 +1,7 @@
 package cobra
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	coreauth "github.com/bnema/gtk4-layershell-bitwarden/internal/core/auth"
 	coreconfig "github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
 	coresync "github.com/bnema/gtk4-layershell-bitwarden/internal/core/sync"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
@@ -19,9 +21,11 @@ import (
 )
 
 type fakeAuthService struct {
-	email    string
-	password string
-	events   chan in.Event
+	email            string
+	password         string
+	requireTwoFactor bool
+	twoFactorCode    string
+	events           chan in.Event
 }
 
 func newFakeAuthService() *fakeAuthService {
@@ -32,6 +36,16 @@ func (f *fakeAuthService) Unlock(_ context.Context, email, password string) erro
 	f.email = email
 	f.password = password
 	return nil
+}
+func (f *fakeAuthService) UnlockWithTwoFactor(ctx context.Context, email, password string, prompt coreauth.TwoFactorPrompt) error {
+	if f.requireTwoFactor && prompt != nil {
+		_, code, _, err := prompt(ctx, []coreauth.TwoFactorProvider{coreauth.TwoFactorProviderAuthenticator})
+		if err != nil {
+			return err
+		}
+		f.twoFactorCode = code
+	}
+	return f.Unlock(ctx, email, password)
 }
 func (f *fakeAuthService) Lock(context.Context) error { return nil }
 func (f *fakeAuthService) Search(context.Context, string, int) ([]vault.ScoredItem, error) {
@@ -126,6 +140,28 @@ func TestLoginRejectsInvalidRegion(t *testing.T) {
 	_, err := executeCmd(t, opts, []string{"login", "me@example.com", "master-password", "--raw", "--no-sync", "--region", "mars"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unsupported region")
+}
+
+func TestLoginPromptsForAuthenticatorCode(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	fake := newFakeAuthService()
+	fake.requireTwoFactor = true
+	opts := Options{
+		ConfigPath: configPath,
+		ComposeService: func(context.Context, *coreconfig.Config, string, string) (in.AppService, error) {
+			return fake, nil
+		},
+	}
+	root := NewRootCommand(opts)
+	root.SetArgs([]string{"login", "me@example.com", "master-password", "--raw", "--no-sync", "--region", "us"})
+	root.SetIn(strings.NewReader("123456\n"))
+	out := new(bytes.Buffer)
+	root.SetOut(out)
+	root.SetErr(new(bytes.Buffer))
+
+	require.NoError(t, root.ExecuteContext(context.Background()))
+	require.Equal(t, "123456", fake.twoFactorCode)
 }
 
 func TestUnlockUsesConfiguredEmail(t *testing.T) {

@@ -7,12 +7,15 @@ import (
 	"context"
 	"io"
 
+	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/auth"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
 )
 
 // RemoteVault abstracts the Bitwarden remote API. No SDK types leak.
 type RemoteVault interface {
 	Login(ctx context.Context, email, password string) error
+	BeginLogin(ctx context.Context, email, password string) (*auth.TwoFactorChallenge, error)
+	CompleteTwoFactorLogin(ctx context.Context, challenge *auth.TwoFactorChallenge, provider auth.TwoFactorProvider, code string, remember bool) error
 	CompleteTwoFactor(ctx context.Context, provider, code string, remember bool) error
 	Lock(ctx context.Context) error
 	Revision(ctx context.Context) (string, error)

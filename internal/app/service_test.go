@@ -87,6 +87,12 @@ type fakeRemote struct {
 	// Configurable Delete
 	deleteErr error
 
+	// Configurable two-factor login
+	beginChallenge   *auth.TwoFactorChallenge
+	beginCalled      bool
+	completeProvider auth.TwoFactorProvider
+	completeCode     string
+
 	// Override hooks (for testing lifecycle)
 	onLogin      func(ctx context.Context, email, password string) error
 	loginEnterCh chan struct{} // signaled when Login is entered (before hook)
@@ -116,6 +122,24 @@ func (r *fakeRemote) Login(ctx context.Context, email, password string) error {
 	r.mu.Lock()
 	r.loginCalled = true
 	r.mu.Unlock()
+	return nil
+}
+
+func (r *fakeRemote) BeginLogin(ctx context.Context, email, password string) (*auth.TwoFactorChallenge, error) {
+	if err := r.Login(ctx, email, password); err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.beginCalled = true
+	return r.beginChallenge, nil
+}
+
+func (r *fakeRemote) CompleteTwoFactorLogin(_ context.Context, _ *auth.TwoFactorChallenge, provider auth.TwoFactorProvider, code string, _ bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.completeProvider = provider
+	r.completeCode = code
 	return nil
 }
 

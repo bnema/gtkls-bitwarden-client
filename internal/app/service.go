@@ -73,6 +73,16 @@ func (s *Service) emit(kind EventKind, message string) {
 
 // Unlock transitions the service from locked to unlocked.
 func (s *Service) Unlock(ctx context.Context, email, password string) (retErr error) {
+	return s.unlock(ctx, email, password, nil)
+}
+
+// UnlockWithTwoFactor transitions the service from locked to unlocked, prompting
+// for a two-factor code when the remote requires it.
+func (s *Service) UnlockWithTwoFactor(ctx context.Context, email, password string, prompt auth.TwoFactorPrompt) error {
+	return s.unlock(ctx, email, password, prompt)
+}
+
+func (s *Service) unlock(ctx context.Context, email, password string, prompt auth.TwoFactorPrompt) (retErr error) {
 	s.mu.Lock()
 	if s.state != auth.LockStateLocked {
 		s.mu.Unlock()
@@ -87,7 +97,31 @@ func (s *Service) Unlock(ctx context.Context, email, password string) (retErr er
 
 	// Login via remote if configured.
 	if s.deps.Remote != nil {
-		if err := s.deps.Remote.Login(ctx, email, password); err != nil {
+		if prompt != nil {
+			challenge, err := s.deps.Remote.BeginLogin(ctx, email, password)
+			if err != nil {
+				s.mu.Lock()
+				s.state = auth.LockStateLocked
+				s.mu.Unlock()
+				return fmt.Errorf("app: login failed: %w", err)
+			}
+			if challenge != nil {
+				defer challenge.Close()
+				provider, code, remember, err := prompt(ctx, challenge.Providers)
+				if err != nil {
+					s.mu.Lock()
+					s.state = auth.LockStateLocked
+					s.mu.Unlock()
+					return err
+				}
+				if err := s.deps.Remote.CompleteTwoFactorLogin(ctx, challenge, provider, code, remember); err != nil {
+					s.mu.Lock()
+					s.state = auth.LockStateLocked
+					s.mu.Unlock()
+					return fmt.Errorf("app: two-factor login failed: %w", err)
+				}
+			}
+		} else if err := s.deps.Remote.Login(ctx, email, password); err != nil {
 			s.mu.Lock()
 			s.state = auth.LockStateLocked
 			s.mu.Unlock()

@@ -6,6 +6,7 @@ import (
 	"io"
 
 	sdk "github.com/bnema/bitwarden-go-sdk/bitwarden"
+	coreauth "github.com/bnema/gtk4-layershell-bitwarden/internal/core/auth"
 	coreconfig "github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
 	corevault "github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/out"
@@ -67,11 +68,75 @@ func (c *Client) Login(ctx context.Context, email, password string) error {
 	return c.sdk.Login(ctx, sdk.LoginOptions{Email: email, Password: password})
 }
 
-// CompleteTwoFactor returns ErrTwoFactorUnsupported because the current
-// RemoteVault port does not expose a two-factor challenge handle; callers
-// should use BeginLogin/CompleteLogin on the SDK directly.
+// BeginLogin starts login and returns a two-factor challenge when required.
+func (c *Client) BeginLogin(ctx context.Context, email, password string) (*coreauth.TwoFactorChallenge, error) {
+	result, err := c.sdk.BeginLogin(ctx, sdk.LoginOptions{Email: email, Password: password})
+	if err != nil {
+		return nil, err
+	}
+	if result.Challenge == nil {
+		return nil, nil
+	}
+	providers := make([]coreauth.TwoFactorProvider, 0, len(result.Challenge.Providers()))
+	for _, provider := range result.Challenge.Providers() {
+		providers = append(providers, fromSDKProvider(provider))
+	}
+	challenge := result.Challenge
+	return coreauth.NewTwoFactorChallenge(providers, challenge, challenge.Close), nil
+}
+
+// CompleteTwoFactorLogin completes a challenge returned by BeginLogin.
+func (c *Client) CompleteTwoFactorLogin(ctx context.Context, challenge *coreauth.TwoFactorChallenge, provider coreauth.TwoFactorProvider, code string, remember bool) error {
+	if challenge == nil {
+		return ErrTwoFactorUnsupported
+	}
+	sdkChallenge, ok := challenge.Handle.(*sdk.TwoFactorChallenge)
+	if !ok || sdkChallenge == nil {
+		return ErrTwoFactorUnsupported
+	}
+	_, err := c.sdk.CompleteLogin(ctx, sdk.CompleteLoginOptions{
+		Challenge: sdkChallenge,
+		Provider:  toSDKProvider(provider),
+		Code:      code,
+		Remember:  remember,
+	})
+	return err
+}
+
+// CompleteTwoFactor returns ErrTwoFactorUnsupported because callers need the
+// challenge returned by BeginLogin.
 func (c *Client) CompleteTwoFactor(_ context.Context, _, _ string, _ bool) error {
 	return ErrTwoFactorUnsupported
+}
+
+func fromSDKProvider(provider sdk.TwoFactorProvider) coreauth.TwoFactorProvider {
+	switch provider {
+	case sdk.TwoFactorProviderAuthenticator:
+		return coreauth.TwoFactorProviderAuthenticator
+	case sdk.TwoFactorProviderEmail:
+		return coreauth.TwoFactorProviderEmail
+	case sdk.TwoFactorProviderYubiKey:
+		return coreauth.TwoFactorProviderYubiKey
+	case sdk.TwoFactorProviderDuo:
+		return coreauth.TwoFactorProviderDuo
+	default:
+		return coreauth.TwoFactorProvider(provider)
+	}
+}
+
+func toSDKProvider(provider coreauth.TwoFactorProvider) sdk.TwoFactorProvider {
+	switch provider {
+	case coreauth.TwoFactorProviderAuthenticator:
+		return sdk.TwoFactorProviderAuthenticator
+	case coreauth.TwoFactorProviderEmail:
+		return sdk.TwoFactorProviderEmail
+	case coreauth.TwoFactorProviderYubiKey:
+		return sdk.TwoFactorProviderYubiKey
+	case coreauth.TwoFactorProviderDuo:
+		return sdk.TwoFactorProviderDuo
+	default:
+		return sdk.TwoFactorProvider(provider)
+	}
 }
 
 // Lock locks the vault client, clearing in-memory key material.

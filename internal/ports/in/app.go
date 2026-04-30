@@ -7,6 +7,7 @@ import (
 	"context"
 	"io"
 
+	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/auth"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/sync"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
@@ -39,6 +40,7 @@ type Event struct {
 // application through this interface.
 type AppService interface {
 	Unlock(ctx context.Context, email, password string) error
+	UnlockWithTwoFactor(ctx context.Context, email, password string, prompt auth.TwoFactorPrompt) error
 	Lock(ctx context.Context) error
 	Search(ctx context.Context, query string, limit int) ([]vault.ScoredItem, error)
 	Items(ctx context.Context) ([]vault.Item, error)
