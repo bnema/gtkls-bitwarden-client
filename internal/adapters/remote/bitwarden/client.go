@@ -374,7 +374,6 @@ func serverIdentityOption(serverURL string) sdk.Option {
 type refreshTokenStore struct {
 	mu     sync.Mutex
 	toLoad sdk.TokenSet
-	saved  *sdk.TokenSet
 }
 
 func newRefreshTokenStore(seeds sdk.TokenSet) *refreshTokenStore {
@@ -394,10 +393,9 @@ func (s *refreshTokenStore) SaveTokens(_ context.Context, tokens sdk.TokenSet) e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cloned := tokens.Clone()
-	s.saved = &cloned
 	// Also update toLoad for future reads.
 	s.toLoad.Close()
-	s.toLoad = tokens.Clone()
+	s.toLoad = cloned
 	return nil
 }
 

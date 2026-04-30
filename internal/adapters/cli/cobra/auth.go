@@ -23,6 +23,8 @@ type authOptions struct {
 	raw          bool
 	passwordEnv  string
 	passwordFile string
+	pinEnv       string
+	pinFile      string
 	noSync       bool
 	region       string
 	serverURL    string
@@ -69,6 +71,8 @@ func addAuthFlags(cmd *cobra.Command, auth *authOptions) {
 	cmd.Flags().BoolVar(&auth.raw, "raw", false, "Print minimal output (no decoration)")
 	cmd.Flags().StringVar(&auth.passwordEnv, "passwordenv", "", "Environment variable containing the master password")
 	cmd.Flags().StringVar(&auth.passwordFile, "passwordfile", "", "File containing the master password")
+	cmd.Flags().StringVar(&auth.pinEnv, "pinenv", "", "Environment variable containing the local unlock PIN")
+	cmd.Flags().StringVar(&auth.pinFile, "pinfile", "", "File containing the local unlock PIN")
 	cmd.Flags().BoolVar(&auth.noSync, "no-sync", false, "Unlock then exit without waiting for background sync")
 }
 
@@ -266,23 +270,38 @@ func resolveLoginRegion(cmd *cobra.Command, cfg *coreconfig.Config, auth authOpt
 	return nil
 }
 
-// resolvePIN resolves the unlock PIN from positional args, --passwordenv,
-// --passwordfile, or an interactive prompt.
+// resolvePIN resolves the unlock PIN from positional args, --pinenv,
+// --pinfile, legacy --passwordenv/--passwordfile, or an interactive prompt.
 func resolvePIN(cmd *cobra.Command, args []string, auth authOptions) (string, error) {
 	if len(args) > 0 {
 		return args[0], nil
 	}
+	if auth.pinEnv != "" {
+		value := os.Getenv(auth.pinEnv)
+		if value == "" {
+			return "", fmt.Errorf("pin environment variable %s is empty", auth.pinEnv)
+		}
+		return strings.TrimRight(value, "\r\n"), nil
+	}
+	if auth.pinFile != "" {
+		data, err := os.ReadFile(auth.pinFile)
+		if err != nil {
+			return "", fmt.Errorf("read pin file: %w", err)
+		}
+		return strings.TrimRight(string(data), "\r\n"), nil
+	}
+	// Backward compatibility for scripts that used the old generic flags for PIN unlock.
 	if auth.passwordEnv != "" {
 		value := os.Getenv(auth.passwordEnv)
 		if value == "" {
-			return "", fmt.Errorf("PIN environment variable %s is empty", auth.passwordEnv)
+			return "", fmt.Errorf("pin environment variable %s is empty", auth.passwordEnv)
 		}
 		return strings.TrimRight(value, "\r\n"), nil
 	}
 	if auth.passwordFile != "" {
 		data, err := os.ReadFile(auth.passwordFile)
 		if err != nil {
-			return "", fmt.Errorf("read PIN file: %w", err)
+			return "", fmt.Errorf("read pin file: %w", err)
 		}
 		return strings.TrimRight(string(data), "\r\n"), nil
 	}
@@ -404,8 +423,10 @@ func newStatusCmd(opts Options, cachePath, outboxPath string) *cobra.Command {
 				defer func() { _ = svc.Shutdown(context.Background()) }()
 
 				statusStr, aerr := svc.AuthStatus(cmd.Context(), email)
-				if aerr != nil && statusStr == "" {
-					return aerr
+				if aerr != nil {
+					if statusStr != session.KeyringUnavailable {
+						return aerr
+					}
 				}
 				resp.Status = string(statusStr)
 			}

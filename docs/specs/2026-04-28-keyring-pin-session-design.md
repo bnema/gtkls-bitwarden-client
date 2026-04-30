@@ -249,9 +249,8 @@ Required or proposed settings:
 
 - `security.local_unlock_ttl`: default `30m`
 - `security.pin_min_length`: default `4` or `6`; final value should balance sekeve-like UX and brute-force cost
-- `security.pin_max_failures`: default `5`
 - `security.pin_backoff`: exponential, capped
-- `security.pin_max_failures`: after the final failed attempt, delete the local unlock envelope and require the master password
+- `security.pin_max_failures`: default `5`; after the final failed attempt, delete the local unlock envelope and require the master password
 
 Existing `security.idle_relock_after` and `security.resident_relock_after` should either be mapped to these concepts or renamed in a migration-safe way.
 

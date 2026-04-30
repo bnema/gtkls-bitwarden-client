@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const defaultPINMaxFailures = 5
+
 var (
 	ErrUnlockExpired   = errors.New("unlock envelope has expired")
 	ErrBootChanged     = errors.New("boot ID has changed")
@@ -39,7 +41,7 @@ func (e *UnlockEnvelope) RecordPINFailure(now time.Time) {
 	e.FailedAttempts++
 
 	if e.PINMaxFailures <= 0 {
-		e.PINMaxFailures = 5
+		e.PINMaxFailures = defaultPINMaxFailures
 	}
 
 	n := e.FailedAttempts
@@ -70,7 +72,7 @@ func (e *UnlockEnvelope) RecordPINFailure(now time.Time) {
 func (e UnlockEnvelope) ShouldDeleteAfterFailures() bool {
 	max := e.PINMaxFailures
 	if max <= 0 {
-		max = 5
+		max = defaultPINMaxFailures
 	}
 	return e.FailedAttempts >= max
 }

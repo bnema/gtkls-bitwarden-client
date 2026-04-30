@@ -391,6 +391,8 @@ func (f *fakeSecretBox) Open(ciphertext, key []byte) ([]byte, error) {
 // Fake credential store
 // ---------------------------------------------------------------------------
 
+// TODO: Replace fakeCredentialStore and fakeBootID with generated mocks if the
+// app repo adopts mockery configuration for outbound ports.
 type fakeCredentialStore struct {
 	mu sync.Mutex
 
@@ -1888,6 +1890,8 @@ func TestEnsureFreshTokensKeepsBundleOnTransientFailure(t *testing.T) {
 // Fake PIN envelope service
 // ---------------------------------------------------------------------------
 
+// TODO: Replace fakePINEnvelope with a generated mock if the app repo adopts
+// mockery configuration for outbound ports.
 type fakePINEnvelope struct {
 	mu sync.Mutex
 
@@ -1916,7 +1920,7 @@ func (pe *fakePINEnvelope) Create(_ context.Context, ref session.AccountRef, mat
 	defer pe.mu.Unlock()
 	pe.createCallCnt++
 	pe.ref = ref
-	pe.material = material
+	pe.material = material.Clone()
 	pe.pin = pin
 	pe.bootID = bootID
 	return pe.result, pe.createErr

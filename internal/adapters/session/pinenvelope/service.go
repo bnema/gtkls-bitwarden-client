@@ -32,8 +32,9 @@ const (
 	defaultTTL         = 30 * time.Minute
 	defaultMaxFailures = 5
 	defaultKDFTime     = 3
-	defaultKDFMemory   = 64 * 1024
-	defaultKDFThreads  = 4
+	// Argon2id memory is expressed in KiB; 64*1024 means 64 MiB.
+	defaultKDFMemory  = 64 * 1024
+	defaultKDFThreads = 1
 
 	saltSize = 16
 )

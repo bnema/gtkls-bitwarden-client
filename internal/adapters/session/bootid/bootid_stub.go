@@ -8,15 +8,15 @@ import "context"
 type Provider struct{}
 
 // New returns a non-linux Provider.
-func New() Provider {
-	return Provider{}
+func New() *Provider {
+	return &Provider{}
 }
 
 const stubBootID = "non-linux-test-boot"
 
 // BootID returns "non-linux-test-boot" unless the context is cancelled, in
 // which case it returns the context error.
-func (Provider) BootID(ctx context.Context) (string, error) {
+func (*Provider) BootID(ctx context.Context) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 
@@ -168,12 +169,20 @@ func composeService(ctx context.Context, cfg *coreconfig.Config, cachePath, outb
 // Credential helpers for lock/logout
 // ---------------------------------------------------------------------------
 
+var (
+	defaultCredentialStoreOnce sync.Once
+	defaultCredentialStore     out.CredentialStore
+)
+
 // credentialStore returns the CredentialStore to use for lock/logout operations.
 func credentialStore(opts Options) out.CredentialStore {
 	if opts.CredentialStore != nil {
 		return opts.CredentialStore
 	}
-	return keyring.New()
+	defaultCredentialStoreOnce.Do(func() {
+		defaultCredentialStore = keyring.New()
+	})
+	return defaultCredentialStore
 }
 
 // accountRefFromConfig builds an AccountRef from the config's email and

@@ -118,6 +118,7 @@ func (s *Service) Login(ctx context.Context, input auth.LoginInput) error {
 
 	// Build unlock material: preserve exported UserKey, add cache key.
 	unlockMaterial := material.Clone()
+	defer unlockMaterial.Close()
 	if len(cacheKey) > 0 {
 		unlockMaterial.CacheKey = cacheKey
 	}
@@ -534,9 +535,7 @@ func (s *Service) loadCachedVaultWithKey(ctx context.Context, key []byte) ([]vau
 	}
 
 	// Zero plaintext bytes after decode.
-	for i := range plaintext {
-		plaintext[i] = 0
-	}
+	clear(plaintext)
 
 	var items []vault.Item
 	if err := json.Unmarshal(plain.ItemsJSON, &items); err != nil {
@@ -556,15 +555,9 @@ func (s *Service) loadCachedVaultWithKey(ctx context.Context, key []byte) ([]vau
 	}
 
 	// Zero plain JSON fields after decode.
-	for i := range plain.ItemsJSON {
-		plain.ItemsJSON[i] = 0
-	}
-	for i := range plain.FoldersJSON {
-		plain.FoldersJSON[i] = 0
-	}
-	for i := range plain.OutboxJSON {
-		plain.OutboxJSON[i] = 0
-	}
+	clear(plain.ItemsJSON)
+	clear(plain.FoldersJSON)
+	clear(plain.OutboxJSON)
 
 	return items, folders, outbox, nil
 }

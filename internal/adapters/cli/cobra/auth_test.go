@@ -21,6 +21,8 @@ import (
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/in"
 )
 
+// TODO: Replace fakeAuthService with a generated mock if this app repo adopts
+// mockery configuration for inbound ports.
 type fakeAuthService struct {
 	email            string
 	password         string
