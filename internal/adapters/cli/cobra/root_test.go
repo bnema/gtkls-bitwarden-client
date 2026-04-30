@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/in"
 )
 
@@ -217,10 +218,12 @@ func TestCacheClearRemovesCacheFiles(t *testing.T) {
 
 func TestLogoutPrintsLoggedOut(t *testing.T) {
 	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
 	cachePath := filepath.Join(dir, "cache.json")
 	outboxPath := filepath.Join(dir, "outbox.json")
 
-	cmd := newLogoutCmd(cachePath, outboxPath)
+	opts := Options{ConfigPath: configPath}
+	cmd := newLogoutCmd(opts, cachePath, outboxPath)
 	buf := new(bytes.Buffer)
 	cmd.SetOut(buf)
 	err := cmd.Execute()
@@ -306,4 +309,242 @@ func TestSavedConfigIsValidTOML(t *testing.T) {
 	assert.True(t, strings.Contains(content, "email = 'toml@example.com'") ||
 		strings.Contains(content, `email = "toml@example.com"`),
 		"saved config should contain the email value in TOML format: %s", content)
+}
+
+// ---------------------------------------------------------------------------
+// Fake credential store for lock/logout tests
+// ---------------------------------------------------------------------------
+
+type fakeCredentialStore struct {
+	checkAvailableCalls int
+	checkAvailableErr   error
+	delTokenCalls       int
+	delEnvelopeCalls    int
+	delEnvelopeErr      error
+	delTokenErr         error
+}
+
+func (f *fakeCredentialStore) CheckAvailable(context.Context) error {
+	f.checkAvailableCalls++
+	return f.checkAvailableErr
+}
+
+func (f *fakeCredentialStore) SaveTokenBundle(context.Context, session.AccountRef, session.TokenBundle) error {
+	return nil
+}
+func (f *fakeCredentialStore) LoadTokenBundle(context.Context, session.AccountRef) (session.TokenBundle, error) {
+	return session.TokenBundle{}, nil
+}
+func (f *fakeCredentialStore) DeleteTokenBundle(context.Context, session.AccountRef) error {
+	f.delTokenCalls++
+	return f.delTokenErr
+}
+func (f *fakeCredentialStore) SaveUnlockEnvelope(context.Context, session.AccountRef, session.UnlockEnvelope) error {
+	return nil
+}
+func (f *fakeCredentialStore) LoadUnlockEnvelope(context.Context, session.AccountRef) (session.UnlockEnvelope, error) {
+	return session.UnlockEnvelope{}, nil
+}
+func (f *fakeCredentialStore) DeleteUnlockEnvelope(context.Context, session.AccountRef) error {
+	f.delEnvelopeCalls++
+	return f.delEnvelopeErr
+}
+
+// ---------------------------------------------------------------------------
+// Lock tests
+// ---------------------------------------------------------------------------
+
+func TestLockDeletesUnlockEnvelopeOnly(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+
+	// Pre-configure email.
+	opts := Options{ConfigPath: configPath}
+	_, err := executeCmd(t, opts, []string{"config", "set", "bitwarden.email", "test@example.com"})
+	require.NoError(t, err)
+
+	fakeStore := &fakeCredentialStore{}
+	opts.CredentialStore = fakeStore
+
+	cmd := newLockCmd(opts)
+	cmd.SetArgs([]string{})
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+
+	err = cmd.Execute()
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "Local unlock cleared.")
+	assert.NotContains(t, output, "BW_SESSION", "output must not contain BW_SESSION")
+
+	// Unlock envelope should be deleted, token bundle must NOT be touched.
+	assert.Equal(t, 1, fakeStore.checkAvailableCalls, "CheckAvailable should be called once")
+	assert.Equal(t, 1, fakeStore.delEnvelopeCalls, "DeleteUnlockEnvelope should be called once")
+	assert.Equal(t, 0, fakeStore.delTokenCalls, "DeleteTokenBundle must NOT be called")
+}
+
+func TestLockNoEmailPrintsAlreadyLocked(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+
+	fakeStore := &fakeCredentialStore{}
+	opts := Options{ConfigPath: configPath, CredentialStore: fakeStore}
+
+	cmd := newLockCmd(opts)
+	cmd.SetArgs([]string{})
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "already locked")
+
+	// Keyring must NOT be touched when no email is configured.
+	assert.Equal(t, 0, fakeStore.checkAvailableCalls, "CheckAvailable must not be called")
+	assert.Equal(t, 0, fakeStore.delEnvelopeCalls, "DeleteUnlockEnvelope must not be called")
+	assert.Equal(t, 0, fakeStore.delTokenCalls, "DeleteTokenBundle must not be called")
+}
+
+func TestLockFailsOnCheckAvailableError(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+
+	// Pre-configure email.
+	opts := Options{ConfigPath: configPath}
+	_, err := executeCmd(t, opts, []string{"config", "set", "bitwarden.email", "test@example.com"})
+	require.NoError(t, err)
+
+	fakeStore := &fakeCredentialStore{
+		checkAvailableErr: assert.AnError,
+	}
+	opts.CredentialStore = fakeStore
+
+	cmd := newLockCmd(opts)
+	cmd.SetArgs([]string{})
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+
+	err = cmd.Execute()
+	require.Error(t, err)
+
+	// DeleteUnlockEnvelope must not be reached after CheckAvailable fails.
+	assert.Equal(t, 1, fakeStore.checkAvailableCalls, "CheckAvailable should be called once")
+	assert.Equal(t, 0, fakeStore.delEnvelopeCalls, "DeleteUnlockEnvelope must not be called after CheckAvailable failure")
+}
+
+// ---------------------------------------------------------------------------
+// Logout tests
+// ---------------------------------------------------------------------------
+
+func TestLogoutDeletesCredentialsAndCacheOutbox(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	cachePath := filepath.Join(dir, "cache.json")
+	outboxPath := filepath.Join(dir, "outbox.json")
+
+	// Create dummy cache and outbox files.
+	require.NoError(t, os.WriteFile(cachePath, []byte(`{"items":[]}`), 0600))
+	require.NoError(t, os.WriteFile(outboxPath, []byte(`{"mutations":[]}`), 0600))
+
+	// Pre-configure email.
+	opts := Options{ConfigPath: configPath}
+	_, err := executeCmd(t, opts, []string{"config", "set", "bitwarden.email", "test@example.com"})
+	require.NoError(t, err)
+
+	fakeStore := &fakeCredentialStore{}
+	opts.CredentialStore = fakeStore
+
+	cmd := newLogoutCmd(opts, cachePath, outboxPath)
+	cmd.SetArgs([]string{})
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+
+	err = cmd.Execute()
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "logged out")
+
+	// Both unlock envelope and token bundle should be deleted.
+	assert.Equal(t, 1, fakeStore.checkAvailableCalls, "CheckAvailable should be called once")
+	assert.Equal(t, 1, fakeStore.delEnvelopeCalls, "DeleteUnlockEnvelope should be called once")
+	assert.Equal(t, 1, fakeStore.delTokenCalls, "DeleteTokenBundle should be called once")
+
+	// Cache and outbox files should be removed.
+	assert.NoFileExists(t, cachePath, "cache file should be removed")
+	assert.NoFileExists(t, outboxPath, "outbox file should be removed")
+}
+
+func TestLogoutNoEmailStillClearsCacheAndOutbox(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	cachePath := filepath.Join(dir, "cache.json")
+	outboxPath := filepath.Join(dir, "outbox.json")
+
+	// Create dummy cache and outbox files.
+	require.NoError(t, os.WriteFile(cachePath, []byte(`{}`), 0600))
+	require.NoError(t, os.WriteFile(outboxPath, []byte(`{}`), 0600))
+
+	fakeStore := &fakeCredentialStore{}
+	opts := Options{ConfigPath: configPath, CredentialStore: fakeStore}
+
+	cmd := newLogoutCmd(opts, cachePath, outboxPath)
+	cmd.SetArgs([]string{})
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "logged out")
+
+	// Keyring must NOT be touched when no email is configured.
+	assert.Equal(t, 0, fakeStore.checkAvailableCalls, "CheckAvailable must not be called")
+	assert.Equal(t, 0, fakeStore.delEnvelopeCalls, "DeleteUnlockEnvelope must not be called")
+	assert.Equal(t, 0, fakeStore.delTokenCalls, "DeleteTokenBundle must not be called")
+
+	// Cache and outbox should still be cleared.
+	assert.NoFileExists(t, cachePath, "cache file should be removed")
+	assert.NoFileExists(t, outboxPath, "outbox file should be removed")
+}
+
+func TestLogoutContinuesOnKeyringError(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	cachePath := filepath.Join(dir, "cache.json")
+	outboxPath := filepath.Join(dir, "outbox.json")
+
+	// Create dummy cache and outbox files.
+	require.NoError(t, os.WriteFile(cachePath, []byte(`{}`), 0600))
+	require.NoError(t, os.WriteFile(outboxPath, []byte(`{}`), 0600))
+
+	// Pre-configure email.
+	opts := Options{ConfigPath: configPath}
+	_, err := executeCmd(t, opts, []string{"config", "set", "bitwarden.email", "test@example.com"})
+	require.NoError(t, err)
+
+	// Credential store returns an error on CheckAvailable.
+	fakeStore := &fakeCredentialStore{
+		checkAvailableErr: assert.AnError,
+	}
+	opts.CredentialStore = fakeStore
+
+	cmd := newLogoutCmd(opts, cachePath, outboxPath)
+	cmd.SetArgs([]string{})
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+
+	err = cmd.Execute()
+	require.NoError(t, err, "logout should succeed even when keyring is unavailable")
+
+	output := buf.String()
+	assert.Contains(t, output, "logged out")
+
+	// Cache and outbox should still be cleared.
+	assert.NoFileExists(t, cachePath, "cache file should be removed")
+	assert.NoFileExists(t, outboxPath, "outbox file should be removed")
 }

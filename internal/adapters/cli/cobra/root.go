@@ -21,7 +21,9 @@ import (
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/session/pinenvelope"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/app"
 	coreconfig "github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
+	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/in"
+	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/out"
 )
 
 // Options holds configuration for the CLI.
@@ -34,6 +36,10 @@ type Options struct {
 	// ComposeService builds the application service. If nil, production adapters
 	// are used. Injecting a test double keeps auth command tests offline.
 	ComposeService func(context.Context, *coreconfig.Config, string, string) (in.AppService, error)
+	// CredentialStore backs lock/logout keyring operations. If nil, keyring.New()
+	// is used. Injecting a test double prevents tests from touching the real
+	// OS secret service.
+	CredentialStore out.CredentialStore
 }
 
 // NewRootCommand creates the root CLI command with all subcommands.
@@ -98,9 +104,9 @@ func NewRootCommand(opts Options) *cobra.Command {
 	root.AddCommand(newLoginCmd(opts, cachePath, outboxPath))
 	root.AddCommand(newUnlockCmd(opts, cachePath, outboxPath))
 	root.AddCommand(newStatusCmd(opts, cachePath, outboxPath))
-	root.AddCommand(newLockCmd())
+	root.AddCommand(newLockCmd(opts))
 	root.AddCommand(newCacheCmd(cachePath, outboxPath))
-	root.AddCommand(newLogoutCmd(cachePath, outboxPath))
+	root.AddCommand(newLogoutCmd(opts, cachePath, outboxPath))
 	root.AddCommand(newSyncCmd())
 
 	return root
@@ -156,6 +162,51 @@ func composeService(ctx context.Context, cfg *coreconfig.Config, cachePath, outb
 	})
 
 	return svc, nil
+}
+
+// ---------------------------------------------------------------------------
+// Credential helpers for lock/logout
+// ---------------------------------------------------------------------------
+
+// credentialStore returns the CredentialStore to use for lock/logout operations.
+func credentialStore(opts Options) out.CredentialStore {
+	if opts.CredentialStore != nil {
+		return opts.CredentialStore
+	}
+	return keyring.New()
+}
+
+// accountRefFromConfig builds an AccountRef from the config's email and
+// effective server URL.
+func accountRefFromConfig(cfg *coreconfig.Config) session.AccountRef {
+	return session.AccountRef{
+		Email:     cfg.Bitwarden.Email,
+		ServerURL: effectiveServerURL(cfg),
+	}
+}
+
+// deleteUnlockEnvelopeForConfig checks keyring availability and deletes the
+// unlock envelope for the configured account. Token bundle and cache are
+// left untouched.
+func deleteUnlockEnvelopeForConfig(ctx context.Context, store out.CredentialStore, cfg *coreconfig.Config) error {
+	if err := store.CheckAvailable(ctx); err != nil {
+		return err
+	}
+	ref := accountRefFromConfig(cfg)
+	return store.DeleteUnlockEnvelope(ctx, ref)
+}
+
+// deleteCredentialsForConfig checks keyring availability and deletes both the
+// unlock envelope and token bundle for the configured account.
+func deleteCredentialsForConfig(ctx context.Context, store out.CredentialStore, cfg *coreconfig.Config) error {
+	if err := store.CheckAvailable(ctx); err != nil {
+		return err
+	}
+	ref := accountRefFromConfig(cfg)
+	if err := store.DeleteUnlockEnvelope(ctx, ref); err != nil {
+		return err
+	}
+	return store.DeleteTokenBundle(ctx, ref)
 }
 
 // ---------------------------------------------------------------------------
@@ -284,13 +335,27 @@ func newCacheCmd(cachePath, outboxPath string) *cobra.Command {
 // Logout subcommand
 // ---------------------------------------------------------------------------
 
-// newLogoutCmd creates the "logout" subcommand.
-func newLogoutCmd(cachePath, outboxPath string) *cobra.Command {
+// newLogoutCmd removes the token bundle, unlock envelope, encrypted cache,
+// and encrypted outbox.
+func newLogoutCmd(opts Options, cachePath, outboxPath string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "logout",
 		Short: "Log out of Bitwarden",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			mgr := viperadapter.NewManager(opts.ConfigPath)
+			cfg, err := mgr.Load(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("config load: %w", err)
+			}
+
+			// Only delete credentials when an email is configured.
+			if cfg.Bitwarden.Email != "" {
+				store := credentialStore(opts)
+				// Best-effort: proceed even if keyring delete fails.
+				_ = deleteCredentialsForConfig(cmd.Context(), store, cfg)
+			}
+
 			if err := clearCacheAndOutbox(cmd.Context(), cachePath, outboxPath); err != nil {
 				return err
 			}

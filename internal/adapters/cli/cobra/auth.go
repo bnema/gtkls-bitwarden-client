@@ -400,17 +400,35 @@ func effectiveServerURL(cfg *coreconfig.Config) string {
 	return "https://vault.bitwarden.com"
 }
 
-// newLockCmd mirrors `bw lock` for this short-lived CLI process: it clears
-// BW_SESSION in the current process only. Persistent vault data is protected by
-// the encrypted cache and is cleared with `logout` / `cache clear`.
-func newLockCmd() *cobra.Command {
+// newLockCmd deletes the local unlock envelope from the OS keyring so that
+// a PIN is required to unlock again. The Bitwarden token bundle, encrypted
+// cache, and outbox are left intact.
+func newLockCmd(opts Options) *cobra.Command {
 	return &cobra.Command{
 		Use:   "lock",
-		Short: "Lock the current CLI process session (clears BW_SESSION only)",
+		Short: "Lock the local vault (clears unlock envelope)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_ = os.Unsetenv("BW_SESSION")
-			cmd.Println("Your vault is locked.")
+
+			mgr := viperadapter.NewManager(opts.ConfigPath)
+			cfg, err := mgr.Load(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("config load: %w", err)
+			}
+
+			if cfg.Bitwarden.Email == "" {
+				// No account configured; nothing to lock.
+				cmd.Println("Local vault is already locked.")
+				return nil
+			}
+
+			store := credentialStore(opts)
+			if err := deleteUnlockEnvelopeForConfig(cmd.Context(), store, cfg); err != nil {
+				return err
+			}
+
+			cmd.Println("Local unlock cleared.")
 			return nil
 		},
 	}
