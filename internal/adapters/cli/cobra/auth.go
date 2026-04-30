@@ -1,10 +1,7 @@
 package cobra
 
 import (
-	"bufio"
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -44,7 +41,7 @@ func newLoginCmd(opts Options, cachePath, outboxPath string) *cobra.Command {
 		Short: "Log in to Bitwarden",
 		Args:  cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runLoginUnlock(cmd, opts, cachePath, outboxPath, args, auth, true)
+			return runLogin(cmd, opts, cachePath, outboxPath, args, auth)
 		},
 	}
 	addAuthFlags(cmd, &auth)
@@ -60,7 +57,7 @@ func newUnlockCmd(opts Options, cachePath, outboxPath string) *cobra.Command {
 		Short: "Unlock the local vault cache",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runLoginUnlock(cmd, opts, cachePath, outboxPath, args, auth, false)
+			return runUnlock(cmd, opts, cachePath, outboxPath, args, auth)
 		},
 	}
 	addAuthFlags(cmd, &auth)
@@ -68,13 +65,13 @@ func newUnlockCmd(opts Options, cachePath, outboxPath string) *cobra.Command {
 }
 
 func addAuthFlags(cmd *cobra.Command, auth *authOptions) {
-	cmd.Flags().BoolVar(&auth.raw, "raw", false, "Return only the session key")
+	cmd.Flags().BoolVar(&auth.raw, "raw", false, "Print minimal output (no decoration)")
 	cmd.Flags().StringVar(&auth.passwordEnv, "passwordenv", "", "Environment variable containing the master password")
 	cmd.Flags().StringVar(&auth.passwordFile, "passwordfile", "", "File containing the master password")
 	cmd.Flags().BoolVar(&auth.noSync, "no-sync", false, "Unlock then exit without waiting for background sync")
 }
 
-func runLoginUnlock(cmd *cobra.Command, opts Options, cachePath, outboxPath string, args []string, auth authOptions, login bool) error {
+func runLogin(cmd *cobra.Command, opts Options, cachePath, outboxPath string, args []string, auth authOptions) error {
 	mgr := viperadapter.NewManager(opts.ConfigPath)
 	cfg, err := mgr.Load(cmd.Context())
 	if err != nil {
@@ -82,27 +79,23 @@ func runLoginUnlock(cmd *cobra.Command, opts Options, cachePath, outboxPath stri
 	}
 
 	email := cfg.Bitwarden.Email
-	passwordArgs := args
-	if login {
-		if len(args) > 0 {
-			email = args[0]
-		}
-		if strings.TrimSpace(email) == "" {
-			prompted, err := promptLine(cmd.InOrStdin(), cmd.ErrOrStderr(), "Email address: ")
-			if err != nil {
-				return err
-			}
-			email = strings.TrimSpace(prompted)
-		}
-		passwordArgs = nil
-		if len(args) > 1 {
-			passwordArgs = []string{args[1]}
-		}
-		if err := resolveLoginRegion(cmd, cfg, auth); err != nil {
+	if len(args) > 0 {
+		email = args[0]
+	}
+	if strings.TrimSpace(email) == "" {
+		prompted, err := promptLine(cmd.InOrStdin(), cmd.ErrOrStderr(), "Email address: ")
+		if err != nil {
 			return err
 		}
-	} else if strings.TrimSpace(email) == "" {
-		return fmt.Errorf("no configured email; run `gtk4-layershell-bitwarden login <email>` first or set bitwarden.email")
+		email = strings.TrimSpace(prompted)
+	}
+
+	var passwordArgs []string
+	if len(args) > 1 {
+		passwordArgs = []string{args[1]}
+	}
+	if err := resolveLoginRegion(cmd, cfg, auth); err != nil {
+		return err
 	}
 
 	password, err := resolvePassword(cmd, passwordArgs, auth)
@@ -110,14 +103,62 @@ func runLoginUnlock(cmd *cobra.Command, opts Options, cachePath, outboxPath stri
 		return err
 	}
 
-	if login {
-		cfg.Bitwarden.Email = email
-		if err := coreconfig.Validate(cfg); err != nil {
-			return err
-		}
-		if err := mgr.Save(cmd.Context(), cfg); err != nil {
-			return fmt.Errorf("save login config: %w", err)
-		}
+	pin, err := promptPIN(cmd.InOrStdin(), cmd.ErrOrStderr())
+	if err != nil {
+		return err
+	}
+
+	cfg.Bitwarden.Email = email
+	if err := coreconfig.Validate(cfg); err != nil {
+		return err
+	}
+	if err := mgr.Save(cmd.Context(), cfg); err != nil {
+		return fmt.Errorf("save login config: %w", err)
+	}
+
+	svc, err := composeAppService(opts, cmd.Context(), cfg, cachePath, outboxPath)
+	if err != nil {
+		return fmt.Errorf("compose service: %w", err)
+	}
+	defer func() { _ = svc.Shutdown(context.Background()) }()
+
+	loginInput := coreauth.LoginInput{
+		Email:           email,
+		Password:        password,
+		PIN:             pin,
+		TwoFactorPrompt: promptTwoFactorCode(cmd),
+	}
+	if err := svc.Login(cmd.Context(), loginInput); err != nil {
+		return err
+	}
+
+	if !auth.noSync {
+		waitForInitialSync(cmd.Context(), svc.Events(), 30*time.Second)
+	}
+
+	if auth.raw {
+		cmd.Println("login ok")
+	} else {
+		cmd.Println("You are logged in!")
+	}
+	return nil
+}
+
+func runUnlock(cmd *cobra.Command, opts Options, cachePath, outboxPath string, args []string, auth authOptions) error {
+	mgr := viperadapter.NewManager(opts.ConfigPath)
+	cfg, err := mgr.Load(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("config load: %w", err)
+	}
+
+	email := cfg.Bitwarden.Email
+	if strings.TrimSpace(email) == "" {
+		return fmt.Errorf("no configured email; run `gtk4-layershell-bitwarden login <email>` first or set bitwarden.email")
+	}
+
+	password, err := resolvePassword(cmd, args, auth)
+	if err != nil {
+		return err
 	}
 
 	svc, err := composeAppService(opts, cmd.Context(), cfg, cachePath, outboxPath)
@@ -133,25 +174,11 @@ func runLoginUnlock(cmd *cobra.Command, opts Options, cachePath, outboxPath stri
 		waitForInitialSync(cmd.Context(), svc.Events(), 30*time.Second)
 	}
 
-	session, err := newSessionKey()
-	if err != nil {
-		return err
-	}
-	_ = os.Setenv("BW_SESSION", session)
 	if auth.raw {
-		cmd.Println(session)
-		return nil
-	}
-
-	if login {
-		cmd.Println("You are logged in!")
+		cmd.Println("unlock ok")
 	} else {
 		cmd.Println("Your vault is now unlocked!")
 	}
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "\nTo unlock your vault in this shell, set the session key to the `BW_SESSION` environment variable. ex:\n")
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "$ export BW_SESSION=%q\n", session)
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "> $env:BW_SESSION=%q\n", session)
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "\nYou can also pass the session key to compatible commands with `--session` in future releases.\n")
 	return nil
 }
 
@@ -251,12 +278,32 @@ func resolvePassword(cmd *cobra.Command, args []string, auth authOptions) (strin
 
 func promptLine(in io.Reader, errOut io.Writer, prompt string) (string, error) {
 	_, _ = fmt.Fprint(errOut, prompt)
-	reader := bufio.NewReader(in)
-	line, err := reader.ReadString('\n')
-	if err != nil && err != io.EOF {
-		return "", err
+
+	// Read byte-by-byte to avoid bufio.Reader buffering, which would
+	// consume future prompt lines when multiple prompts share the same
+	// underlying reader (e.g. PIN then 2FA).
+	var buf [256]byte
+	n := 0
+	for n < len(buf) {
+		var b [1]byte
+		_, err := in.Read(b[:])
+		if err != nil {
+			if err == io.EOF && n > 0 {
+				break
+			}
+			return "", err
+		}
+		if b[0] == '\n' {
+			break
+		}
+		buf[n] = b[0]
+		n++
 	}
-	return strings.TrimRight(line, "\r\n"), nil
+	return strings.TrimRight(string(buf[:n]), "\r"), nil
+}
+
+func promptPIN(in io.Reader, errOut io.Writer) (string, error) {
+	return promptLine(in, errOut, "Local unlock PIN: ")
 }
 
 func promptPassword(in io.Reader, errOut io.Writer) (string, error) {
@@ -270,14 +317,6 @@ func promptPassword(in io.Reader, errOut io.Writer) (string, error) {
 		return string(password), nil
 	}
 	return promptLine(in, errOut, "")
-}
-
-func newSessionKey() (string, error) {
-	buf := make([]byte, 64)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(buf), nil
 }
 
 func waitForInitialSync(ctx context.Context, events <-chan in.Event, timeout time.Duration) {

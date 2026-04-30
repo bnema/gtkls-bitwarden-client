@@ -22,6 +22,7 @@ type Deps struct {
 	Config      *config.Config
 	Credentials out.CredentialStore
 	BootID      out.BootIDProvider
+	PINEnvelope out.PINEnvelopeService
 }
 
 // Service implements the application's core business logic.

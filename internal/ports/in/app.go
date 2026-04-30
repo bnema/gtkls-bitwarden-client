@@ -40,6 +40,7 @@ type Event struct {
 // AppService is the primary inbound port. Every UI or CLI adapter drives the
 // application through this interface.
 type AppService interface {
+	Login(ctx context.Context, input auth.LoginInput) error
 	Unlock(ctx context.Context, email, password string) error
 	UnlockWithTwoFactor(ctx context.Context, email, password string, prompt auth.TwoFactorPrompt) error
 	Lock(ctx context.Context) error

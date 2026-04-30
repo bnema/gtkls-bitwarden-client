@@ -3,7 +3,6 @@ package cobra
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -24,6 +23,7 @@ import (
 type fakeAuthService struct {
 	email            string
 	password         string
+	pin              string
 	requireTwoFactor bool
 	twoFactorCode    string
 	events           chan in.Event
@@ -33,6 +33,19 @@ func newFakeAuthService() *fakeAuthService {
 	return &fakeAuthService{events: make(chan in.Event, 4)}
 }
 
+func (f *fakeAuthService) Login(_ context.Context, input coreauth.LoginInput) error {
+	f.email = input.Email
+	f.password = input.Password
+	f.pin = input.PIN
+	if f.requireTwoFactor && input.TwoFactorPrompt != nil {
+		_, code, _, err := input.TwoFactorPrompt(context.Background(), []coreauth.TwoFactorProvider{coreauth.TwoFactorProviderAuthenticator})
+		if err != nil {
+			return err
+		}
+		f.twoFactorCode = code
+	}
+	return nil
+}
 func (f *fakeAuthService) Unlock(_ context.Context, email, password string) error {
 	f.email = email
 	f.password = password
@@ -89,7 +102,7 @@ func (f *fakeAuthService) AuthStatus(_ context.Context, _ string) (session.AuthS
 	return session.Unauthenticated, nil
 }
 
-func TestLoginRawUnlocksAndSavesEmail(t *testing.T) {
+func TestLoginDoesNotPrintBWSessionAndRequiresPIN(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
 	fake := newFakeAuthService()
@@ -100,15 +113,30 @@ func TestLoginRawUnlocksAndSavesEmail(t *testing.T) {
 		},
 	}
 
-	out, err := executeCmd(t, opts, []string{"login", "me@example.com", "master-password", "--raw", "--no-sync", "--region", "us"})
+	// Feed email (already in args), password (args), and PIN via stdin.
+	stdin := strings.NewReader("1234\n")
+	root := NewRootCommand(opts)
+	root.SetArgs([]string{"login", "me@example.com", "master-password", "--raw", "--no-sync", "--region", "us"})
+	root.SetIn(stdin)
+	out := new(bytes.Buffer)
+	root.SetOut(out)
+	root.SetErr(new(bytes.Buffer))
+
+	err := root.ExecuteContext(context.Background())
 	require.NoError(t, err)
+
+	// Verify fake service received correct credentials.
 	require.Equal(t, "me@example.com", fake.email)
 	require.Equal(t, "master-password", fake.password)
+	require.Equal(t, "1234", fake.pin)
 
-	session, err := base64.StdEncoding.DecodeString(strings.TrimSpace(out))
-	require.NoError(t, err)
-	require.Len(t, session, 64)
+	// Output should NOT contain a session key or BW_SESSION.
+	output := out.String()
+	require.NotContains(t, output, "BW_SESSION", "output must not contain BW_SESSION")
+	require.NotContains(t, output, "session", "output must not mention session key")
+	require.Contains(t, output, "login ok")
 
+	// Config should save the email.
 	getOut, err := executeCmd(t, opts, []string{"config", "get", "bitwarden.email"})
 	require.NoError(t, err)
 	require.Equal(t, "me@example.com\n", getOut)
@@ -125,7 +153,14 @@ func TestLoginSavesRegionAndSelfHostedServerURL(t *testing.T) {
 		},
 	}
 
-	_, err := executeCmd(t, opts, []string{"login", "me@example.com", "master-password", "--raw", "--no-sync", "--region", "self_hosted", "--server-url", "https://bitwarden.example.com"})
+	stdin := strings.NewReader("1234\n")
+	root := NewRootCommand(opts)
+	root.SetArgs([]string{"login", "me@example.com", "master-password", "--raw", "--no-sync", "--region", "self_hosted", "--server-url", "https://bitwarden.example.com"})
+	root.SetIn(stdin)
+	root.SetOut(new(bytes.Buffer))
+	root.SetErr(new(bytes.Buffer))
+
+	err := root.ExecuteContext(context.Background())
 	require.NoError(t, err)
 
 	region, err := executeCmd(t, opts, []string{"config", "get", "bitwarden.region"})
@@ -141,7 +176,13 @@ func TestLoginRejectsInvalidRegion(t *testing.T) {
 	configPath := filepath.Join(dir, "config.toml")
 	opts := Options{ConfigPath: configPath}
 
-	_, err := executeCmd(t, opts, []string{"login", "me@example.com", "master-password", "--raw", "--no-sync", "--region", "mars"})
+	root := NewRootCommand(opts)
+	root.SetArgs([]string{"login", "me@example.com", "master-password", "--raw", "--no-sync", "--region", "mars"})
+	root.SetIn(strings.NewReader(""))
+	root.SetOut(new(bytes.Buffer))
+	root.SetErr(new(bytes.Buffer))
+
+	err := root.ExecuteContext(context.Background())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unsupported region")
 }
@@ -157,15 +198,20 @@ func TestLoginPromptsForAuthenticatorCode(t *testing.T) {
 			return fake, nil
 		},
 	}
+	// Input: first line is PIN, second line is 2FA code (PIN prompted before Login).
+	stdin := strings.NewReader("9999\n123456\n")
 	root := NewRootCommand(opts)
 	root.SetArgs([]string{"login", "me@example.com", "master-password", "--raw", "--no-sync", "--region", "us"})
-	root.SetIn(strings.NewReader("123456\n"))
+	root.SetIn(stdin)
 	out := new(bytes.Buffer)
 	root.SetOut(out)
 	root.SetErr(new(bytes.Buffer))
 
 	require.NoError(t, root.ExecuteContext(context.Background()))
 	require.Equal(t, "123456", fake.twoFactorCode)
+	require.Equal(t, "9999", fake.pin)
+	require.Equal(t, "me@example.com", fake.email)
+	require.Equal(t, "master-password", fake.password)
 }
 
 func TestUnlockUsesConfiguredEmail(t *testing.T) {
@@ -182,12 +228,21 @@ func TestUnlockUsesConfiguredEmail(t *testing.T) {
 	_, err := executeCmd(t, opts, []string{"config", "set", "bitwarden.email", "me@example.com"})
 	require.NoError(t, err)
 
-	out, err := executeCmd(t, opts, []string{"unlock", "master-password", "--raw", "--no-sync"})
+	root := NewRootCommand(opts)
+	root.SetArgs([]string{"unlock", "master-password", "--raw", "--no-sync"})
+	outBuf := new(bytes.Buffer)
+	root.SetOut(outBuf)
+	root.SetErr(new(bytes.Buffer))
+
+	err = root.ExecuteContext(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "me@example.com", fake.email)
 	require.Equal(t, "master-password", fake.password)
-	_, err = base64.StdEncoding.DecodeString(strings.TrimSpace(out))
-	require.NoError(t, err)
+
+	// Output should not contain BW_SESSION or base64 session key.
+	output := outBuf.String()
+	require.NotContains(t, output, "BW_SESSION", "unlock output must not contain BW_SESSION")
+	require.Contains(t, output, "unlock ok")
 }
 
 func TestStatusReportsLockedWhenEmailConfigured(t *testing.T) {

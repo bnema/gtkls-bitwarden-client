@@ -72,6 +72,94 @@ func (s *Service) emit(kind EventKind, message string) {
 	s.eventMu.RUnlock()
 }
 
+// Login authenticates with the remote Bitwarden server and stores the
+// resulting token bundle and a PIN-protected unlock envelope in the OS
+// keyring. It performs remote login exactly once and requires a non-empty
+// PIN before any remote call.
+func (s *Service) Login(ctx context.Context, input auth.LoginInput) error {
+	// 1. Validate credentials availability and dependencies before remote login.
+	if err := s.checkCredentialsAvailable(ctx); err != nil {
+		return fmt.Errorf("app: credentials: %w", err)
+	}
+	if s.deps.PINEnvelope == nil {
+		return fmt.Errorf("app: login: %w", cerrors.ErrUnsupported)
+	}
+	if s.deps.BootID == nil {
+		return fmt.Errorf("app: login: %w", cerrors.ErrUnsupported)
+	}
+
+	// 2. Validate PIN before any remote login.
+	pin := strings.TrimSpace(input.PIN)
+	if pin == "" {
+		return fmt.Errorf("app: login: PIN is required")
+	}
+
+	// 3. Perform remote login and cache load exactly once.
+	if err := s.unlock(ctx, input.Email, input.Password, input.TwoFactorPrompt); err != nil {
+		return err
+	}
+
+	// 4. Export session material and token bundle from the authenticated remote.
+	material, tokens, err := s.deps.Remote.ExportSession(ctx)
+	if err != nil {
+		return fmt.Errorf("app: export session: %w", err)
+	}
+	defer material.Close()
+	defer tokens.Close()
+
+	// 5. Read cache key from service under lock; do not alias.
+	s.mu.Lock()
+	var cacheKey []byte
+	if len(s.cacheKey) > 0 {
+		cacheKey = make([]byte, len(s.cacheKey))
+		copy(cacheKey, s.cacheKey)
+	}
+	s.mu.Unlock()
+
+	// Build unlock material: preserve exported UserKey, add cache key.
+	unlockMaterial := material.Clone()
+	if len(cacheKey) > 0 {
+		unlockMaterial.CacheKey = cacheKey
+	}
+
+	// 6. Build account reference and fill token bundle metadata.
+	ref := s.accountRef(input.Email)
+	tokens.Email = ref.Email
+	tokens.ServerURL = ref.ServerURL
+	tokens.UpdatedAt = s.now()
+
+	// 7. Get boot ID.
+	bootID, err := s.deps.BootID.BootID(ctx)
+	if err != nil {
+		return fmt.Errorf("app: boot id: %w", err)
+	}
+
+	// 8. Create PIN-protected unlock envelope.
+	envelope, err := s.deps.PINEnvelope.Create(ctx, ref, unlockMaterial, pin, bootID)
+	if err != nil {
+		return fmt.Errorf("app: create envelope: %w", err)
+	}
+
+	// Set AccountID from token bundle if available.
+	if tokens.AccountID != "" {
+		envelope.AccountID = tokens.AccountID
+	}
+
+	// 9. Persist token bundle and unlock envelope.
+	if err := s.deps.Credentials.SaveTokenBundle(ctx, ref, tokens); err != nil {
+		envelope.Close()
+		return fmt.Errorf("app: save token bundle: %w", err)
+	}
+	if err := s.deps.Credentials.SaveUnlockEnvelope(ctx, ref, envelope); err != nil {
+		// Best-effort clean up token bundle on envelope save failure.
+		_ = s.deps.Credentials.DeleteTokenBundle(ctx, ref)
+		envelope.Close()
+		return fmt.Errorf("app: save unlock envelope: %w", err)
+	}
+
+	return nil
+}
+
 // Unlock transitions the service from locked to unlocked.
 func (s *Service) Unlock(ctx context.Context, email, password string) (retErr error) {
 	return s.unlock(ctx, email, password, nil)

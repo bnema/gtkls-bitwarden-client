@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -107,6 +108,12 @@ type fakeRemote struct {
 	refreshTokenBundleResult  session.TokenBundle
 	refreshTokenBundleErr     error
 	refreshTokenBundleCallCnt atomic.Int32
+
+	// ExportSession configurable
+	exportMaterial   session.UnlockMaterial
+	exportTokens     session.TokenBundle
+	exportSessionErr error
+	exportCallCnt    atomic.Int32
 }
 
 func (r *fakeRemote) Login(ctx context.Context, email, password string) error {
@@ -280,7 +287,8 @@ func (r *fakeRemote) DeleteAttachment(_ context.Context, _, _ string) error {
 }
 
 func (r *fakeRemote) ExportSession(_ context.Context) (session.UnlockMaterial, session.TokenBundle, error) {
-	return session.UnlockMaterial{}, session.TokenBundle{}, fmt.Errorf("fakeRemote: not implemented")
+	r.exportCallCnt.Add(1)
+	return r.exportMaterial, r.exportTokens, r.exportSessionErr
 }
 
 func (r *fakeRemote) RestoreSession(_ context.Context, _ session.UnlockMaterial, _ session.TokenBundle) error {
@@ -375,17 +383,19 @@ type fakeCredentialStore struct {
 	checkAvailableErr   error
 	checkAvailableCalls int
 
-	tokenBundle     session.TokenBundle
-	loadTokenErr    error
-	loadTokenCalls  int
-	saveTokenCalled int
-	delTokenCalls   int
+	tokenBundle      session.TokenBundle
+	savedTokenBundle session.TokenBundle
+	loadTokenErr     error
+	loadTokenCalls   int
+	saveTokenCalled  int
+	delTokenCalls    int
 
-	envelope        session.UnlockEnvelope
-	loadEnvelopeErr error
-	loadEnvCalls    int
-	saveEnvCalled   int
-	delEnvCalls     int
+	envelope            session.UnlockEnvelope
+	savedUnlockEnvelope session.UnlockEnvelope
+	loadEnvelopeErr     error
+	loadEnvCalls        int
+	saveEnvCalled       int
+	delEnvCalls         int
 }
 
 func (cs *fakeCredentialStore) CheckAvailable(_ context.Context) error {
@@ -395,10 +405,11 @@ func (cs *fakeCredentialStore) CheckAvailable(_ context.Context) error {
 	return cs.checkAvailableErr
 }
 
-func (cs *fakeCredentialStore) SaveTokenBundle(_ context.Context, _ session.AccountRef, _ session.TokenBundle) error {
+func (cs *fakeCredentialStore) SaveTokenBundle(_ context.Context, _ session.AccountRef, bundle session.TokenBundle) error {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	cs.saveTokenCalled++
+	cs.savedTokenBundle = bundle
 	return nil
 }
 
@@ -416,10 +427,11 @@ func (cs *fakeCredentialStore) DeleteTokenBundle(_ context.Context, _ session.Ac
 	return nil
 }
 
-func (cs *fakeCredentialStore) SaveUnlockEnvelope(_ context.Context, _ session.AccountRef, _ session.UnlockEnvelope) error {
+func (cs *fakeCredentialStore) SaveUnlockEnvelope(_ context.Context, _ session.AccountRef, env session.UnlockEnvelope) error {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	cs.saveEnvCalled++
+	cs.savedUnlockEnvelope = env
 	return nil
 }
 
@@ -1823,6 +1835,180 @@ func TestEnsureFreshTokensKeepsBundleOnTransientFailure(t *testing.T) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	require.Equal(t, 0, cs.delTokenCalls)
+}
+
+// ---------------------------------------------------------------------------
+// Fake PIN envelope service
+// ---------------------------------------------------------------------------
+
+type fakePINEnvelope struct {
+	mu sync.Mutex
+
+	createCallCnt int
+	material      session.UnlockMaterial
+	ref           session.AccountRef
+	pin           string
+	bootID        string
+
+	result    session.UnlockEnvelope
+	createErr error
+}
+
+func (pe *fakePINEnvelope) Create(_ context.Context, ref session.AccountRef, material session.UnlockMaterial, pin string, bootID string) (session.UnlockEnvelope, error) {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+	pe.createCallCnt++
+	pe.ref = ref
+	pe.material = material
+	pe.pin = pin
+	pe.bootID = bootID
+	return pe.result, pe.createErr
+}
+
+func (pe *fakePINEnvelope) Open(_ context.Context, _ session.AccountRef, _ session.UnlockEnvelope, _ string, _ string) (session.UnlockMaterial, session.UnlockEnvelope, error) {
+	return session.UnlockMaterial{}, session.UnlockEnvelope{}, fmt.Errorf("fakePINEnvelope: not implemented")
+}
+
+// ---------------------------------------------------------------------------
+// Login tests
+// ---------------------------------------------------------------------------
+
+func TestLoginStoresTokenBundleAndPINEnvelope(t *testing.T) {
+	email := "user@example.com"
+	password := "master-password"
+	pin := "1234"
+	ref := session.AccountRef{Email: email, ServerURL: "https://vault.bitwarden.com"}
+	bootID := "boot-abc-123"
+
+	fr := &fakeRemote{
+		exportMaterial: session.UnlockMaterial{
+			UserKey: []byte("user-key-bytes"),
+		},
+		exportTokens: session.TokenBundle{
+			AccountID:    "acct-1",
+			AccessToken:  []byte("access-token"),
+			RefreshToken: []byte("refresh-token"),
+			TokenType:    "Bearer",
+			ExpiresAt:    time.Now().Add(time.Hour),
+		},
+	}
+
+	cs := &fakeCredentialStore{}
+	pe := &fakePINEnvelope{
+		result: session.UnlockEnvelope{
+			Version: session.UnlockEnvelopeVersion,
+			BootID:  bootID,
+			Salt:    []byte("salt"),
+		},
+	}
+	boot := &fakeBootID{id: bootID}
+
+	// Use a cache that returns os.ErrNotExist so cache load is skipped.
+	fakCache := &fakeCache{loadErr: os.ErrNotExist}
+
+	svc := NewService(Deps{
+		Remote:      fr,
+		Cache:       fakCache,
+		SecretBox:   &fakeSecretBox{},
+		Credentials: cs,
+		BootID:      boot,
+		PINEnvelope: pe,
+		Config:      coreconfig.Default(),
+	})
+
+	input := auth.LoginInput{
+		Email:    email,
+		Password: password,
+		PIN:      pin,
+	}
+
+	err := svc.Login(context.Background(), input)
+	require.NoError(t, err)
+
+	// checkCredentialsAvailable should have been called.
+	cs.mu.Lock()
+	require.Equal(t, 1, cs.checkAvailableCalls)
+	cs.mu.Unlock()
+
+	// Remote login should be called exactly once.
+	fr.mu.Lock()
+	require.True(t, fr.loginCalled, "remote Login should be called")
+	fr.mu.Unlock()
+
+	// ExportSession should be called once.
+	require.Equal(t, int32(1), fr.exportCallCnt.Load())
+
+	// Token bundle should be saved under email + server.
+	cs.mu.Lock()
+	require.Equal(t, 1, cs.saveTokenCalled)
+	require.Equal(t, 1, cs.saveEnvCalled)
+	cs.mu.Unlock()
+
+	// PIN envelope should have been created with correct material.
+	pe.mu.Lock()
+	require.Equal(t, 1, pe.createCallCnt)
+	require.Equal(t, ref, pe.ref)
+	require.Equal(t, pin, pe.pin)
+	require.Equal(t, bootID, pe.bootID)
+	require.Equal(t, []byte("user-key-bytes"), pe.material.UserKey)
+	// CacheKey from unlock (first run with no cache) should be non-empty.
+	require.NotEmpty(t, pe.material.CacheKey)
+	pe.mu.Unlock()
+
+	// Token bundle metadata should be filled on saved bundle.
+	cs.mu.Lock()
+	savedTK := cs.savedTokenBundle
+	cs.mu.Unlock()
+	require.Equal(t, ref.Email, savedTK.Email)
+	require.Equal(t, ref.ServerURL, savedTK.ServerURL)
+	require.False(t, savedTK.UpdatedAt.IsZero())
+}
+
+func TestLoginRequiresPINBeforeRemoteLogin(t *testing.T) {
+	fr := &fakeRemote{}
+	cs := &fakeCredentialStore{}
+	pe := &fakePINEnvelope{
+		result: session.UnlockEnvelope{Version: session.UnlockEnvelopeVersion},
+	}
+	boot := &fakeBootID{id: "boot-xyz"}
+
+	fakCache := &fakeCache{loadErr: os.ErrNotExist}
+
+	svc := NewService(Deps{
+		Remote:      fr,
+		Cache:       fakCache,
+		SecretBox:   &fakeSecretBox{},
+		Credentials: cs,
+		BootID:      boot,
+		PINEnvelope: pe,
+		Config:      coreconfig.Default(),
+	})
+
+	// Missing PIN should return a validation error before any remote login.
+	input := auth.LoginInput{
+		Email:    "user@example.com",
+		Password: "master-password",
+		PIN:      "",
+	}
+
+	err := svc.Login(context.Background(), input)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "PIN is required")
+
+	// Remote login should NOT have been called.
+	fr.mu.Lock()
+	require.False(t, fr.loginCalled, "remote Login should not be called when PIN is missing")
+	fr.mu.Unlock()
+
+	// Whitespace-only PIN should also be rejected.
+	input.PIN = "  "
+	err = svc.Login(context.Background(), input)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "PIN is required")
+
+	fr.mu.Lock()
+	require.False(t, fr.loginCalled)
+	fr.mu.Unlock()
 }
 
 // realClock is a minimal out.Clock that delegates to time.Now.

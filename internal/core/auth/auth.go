@@ -52,3 +52,10 @@ func (c *TwoFactorChallenge) Close() {
 }
 
 type TwoFactorPrompt func(ctx context.Context, providers []TwoFactorProvider) (provider TwoFactorProvider, code string, remember bool, err error)
+
+type LoginInput struct {
+	Email           string
+	Password        string
+	PIN             string
+	TwoFactorPrompt TwoFactorPrompt
+}
