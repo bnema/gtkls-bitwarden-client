@@ -1656,6 +1656,37 @@ func TestAuthStatusUsesKeyringAndEnvelope(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, session.LoggedInLocked, status)
 	})
+
+	t.Run("load token bundle unexpected error => keyring_unavailable", func(t *testing.T) {
+		keyringErr := errors.New("secret service not reachable")
+		cs := &fakeCredentialStore{loadTokenErr: keyringErr}
+		svc := NewService(Deps{
+			Config:      coreconfig.Default(),
+			Credentials: cs,
+		})
+
+		status, err := svc.AuthStatus(context.Background(), email)
+		require.Error(t, err)
+		require.Equal(t, session.KeyringUnavailable, status)
+		require.Contains(t, err.Error(), "app: load token bundle")
+	})
+
+	t.Run("load unlock envelope unexpected error => keyring_unavailable", func(t *testing.T) {
+		keyringErr := errors.New("keyring write locked")
+		cs := &fakeCredentialStore{
+			tokenBundle:     validBundle,
+			loadEnvelopeErr: keyringErr,
+		}
+		svc := NewService(Deps{
+			Config:      coreconfig.Default(),
+			Credentials: cs,
+		})
+
+		status, err := svc.AuthStatus(context.Background(), email)
+		require.Error(t, err)
+		require.Equal(t, session.KeyringUnavailable, status)
+		require.Contains(t, err.Error(), "app: load unlock envelope")
+	})
 }
 
 func TestAuthStatusEffectiveServerURL(t *testing.T) {

@@ -1048,13 +1048,19 @@ func (s *Service) AuthStatus(ctx context.Context, email string) (session.AuthSta
 	// Load token bundle; if not found the user is unauthenticated.
 	_, err := s.deps.Credentials.LoadTokenBundle(ctx, ref)
 	if err != nil {
-		return session.Unauthenticated, nil
+		if errors.Is(err, cerrors.ErrNotFound) {
+			return session.Unauthenticated, nil
+		}
+		return session.KeyringUnavailable, fmt.Errorf("app: load token bundle: %w", err)
 	}
 
 	// Load unlock envelope; if not found the vault is locked.
 	env, err := s.deps.Credentials.LoadUnlockEnvelope(ctx, ref)
 	if err != nil {
-		return session.LoggedInLocked, nil
+		if errors.Is(err, cerrors.ErrNotFound) {
+			return session.LoggedInLocked, nil
+		}
+		return session.KeyringUnavailable, fmt.Errorf("app: load unlock envelope: %w", err)
 	}
 
 	// BootID dependency is required to validate the envelope.
