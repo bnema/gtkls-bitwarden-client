@@ -3,11 +3,16 @@ package bitwarden
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
+	"strings"
+	"sync"
 
 	sdk "github.com/bnema/bitwarden-go-sdk/bitwarden"
 	coreauth "github.com/bnema/gtk4-layershell-bitwarden/internal/core/auth"
 	coreconfig "github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
+	coresession "github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
 	corevault "github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/out"
 )
@@ -31,7 +36,8 @@ var (
 
 // Client wraps the Bitwarden Go SDK to implement the out.RemoteVault port.
 type Client struct {
-	sdk *sdk.Client
+	sdk        *sdk.Client
+	httpClient *http.Client // optional; used by RefreshTokenBundle when creating refresh sub-clients
 }
 
 // NewClient creates a new adapter Client wrapping the SDK, configured from a
@@ -61,6 +67,12 @@ func NewClient(cfg *coreconfig.Config, opts ...sdk.Option) (*Client, error) {
 // NewFromSDK wraps an existing SDK client. Useful for tests and future wiring.
 func NewFromSDK(client *sdk.Client) *Client {
 	return &Client{sdk: client}
+}
+
+// NewFromSDKWithHTTPClient wraps an existing SDK client and sets the HTTP
+// client that RefreshTokenBundle uses when creating refresh sub-clients.
+func NewFromSDKWithHTTPClient(client *sdk.Client, hc *http.Client) *Client {
+	return &Client{sdk: client, httpClient: hc}
 }
 
 // Login authenticates with master password.
@@ -269,4 +281,191 @@ func (c *Client) UploadAttachment(ctx context.Context, itemID, fileName string, 
 // DeleteAttachment deletes an attachment.
 func (c *Client) DeleteAttachment(ctx context.Context, itemID, attachmentID string) error {
 	return c.sdk.Attachments().Delete(ctx, itemID, attachmentID)
+}
+
+// ExportSession returns the current unlocked session material and tokens.
+func (c *Client) ExportSession(ctx context.Context) (coresession.UnlockMaterial, coresession.TokenBundle, error) {
+	if c == nil || c.sdk == nil {
+		return coresession.UnlockMaterial{}, coresession.TokenBundle{}, errors.New("bitwarden adapter: client or SDK is nil")
+	}
+
+	sdkMaterial, err := c.sdk.ExportSession(ctx)
+	if err != nil {
+		return coresession.UnlockMaterial{}, coresession.TokenBundle{}, err
+	}
+	defer sdkMaterial.Close()
+
+	material := coresession.UnlockMaterial{
+		UserKey: make([]byte, len(sdkMaterial.UserKey)),
+	}
+	copy(material.UserKey, sdkMaterial.UserKey)
+
+	tokens := coresession.TokenBundle{
+		AccountID:    sdkMaterial.Tokens.AccountID,
+		AccessToken:  make([]byte, len(sdkMaterial.Tokens.AccessToken)),
+		RefreshToken: make([]byte, len(sdkMaterial.Tokens.RefreshToken)),
+		TokenType:    sdkMaterial.Tokens.TokenType,
+		ExpiresAt:    sdkMaterial.Tokens.ExpiresAt,
+	}
+	copy(tokens.AccessToken, sdkMaterial.Tokens.AccessToken)
+	copy(tokens.RefreshToken, sdkMaterial.Tokens.RefreshToken)
+
+	return material, tokens, nil
+}
+
+// RestoreSession imports session material and tokens, unlocking the client.
+func (c *Client) RestoreSession(ctx context.Context, material coresession.UnlockMaterial, tokens coresession.TokenBundle) error {
+	if c == nil || c.sdk == nil {
+		return errors.New("bitwarden adapter: client or SDK is nil")
+	}
+	if tokens.AccountID == "" {
+		return fmt.Errorf("bitwarden adapter: TokenBundle.AccountID must not be empty")
+	}
+
+	sdkMaterial := sdk.SessionMaterial{
+		AccountID: tokens.AccountID,
+		UserKey:   make([]byte, len(material.UserKey)),
+		Tokens: sdk.TokenSet{
+			AccountID:    tokens.AccountID,
+			AccessToken:  make([]byte, len(tokens.AccessToken)),
+			RefreshToken: make([]byte, len(tokens.RefreshToken)),
+			TokenType:    tokens.TokenType,
+			ExpiresAt:    tokens.ExpiresAt,
+		},
+	}
+	copy(sdkMaterial.UserKey, material.UserKey)
+	copy(sdkMaterial.Tokens.AccessToken, tokens.AccessToken)
+	copy(sdkMaterial.Tokens.RefreshToken, tokens.RefreshToken)
+	defer sdkMaterial.Close()
+
+	return c.sdk.RestoreSession(ctx, sdkMaterial)
+}
+
+// classifyServerIdentity classifies a server URL into a region (US/EU) or
+// self-hosted URL. US cloud URL and empty string map to RegionUS;
+// EU cloud URL maps to RegionEU; everything else is self-hosted.
+func classifyServerIdentity(serverURL string) (region sdk.Region, selfHosted string) {
+	normalized := strings.TrimRight(serverURL, "/")
+	switch normalized {
+	case "", "https://vault.bitwarden.com":
+		region = sdk.RegionUS
+	case "https://vault.bitwarden.eu":
+		region = sdk.RegionEU
+	default:
+		selfHosted = serverURL
+	}
+	return
+}
+
+// serverIdentityOption returns the SDK option to connect to the Bitwarden
+// identity service for the given server URL.
+func serverIdentityOption(serverURL string) sdk.Option {
+	region, selfHosted := classifyServerIdentity(serverURL)
+	if selfHosted != "" {
+		return sdk.WithServerURL(selfHosted)
+	}
+	return sdk.WithRegion(region)
+}
+
+// refreshTokenStore implements sdk.TokenStore with an in-memory map so that
+// RefreshTokenBundle can seed a new SDK client with the caller's tokens. It
+// holds a pre-seeded Load set plus a captured Save result.
+type refreshTokenStore struct {
+	mu     sync.Mutex
+	toLoad sdk.TokenSet
+	saved  *sdk.TokenSet
+}
+
+func newRefreshTokenStore(seeds sdk.TokenSet) *refreshTokenStore {
+	return &refreshTokenStore{toLoad: seeds}
+}
+
+func (s *refreshTokenStore) LoadTokens(_ context.Context, accountID string) (sdk.TokenSet, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.toLoad.AccountID != accountID {
+		return sdk.TokenSet{}, fmt.Errorf("bitwarden adapter: account %q not found in refresh token store", accountID)
+	}
+	return s.toLoad.Clone(), nil
+}
+
+func (s *refreshTokenStore) SaveTokens(_ context.Context, tokens sdk.TokenSet) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cloned := tokens.Clone()
+	s.saved = &cloned
+	// Also update toLoad for future reads.
+	s.toLoad.Close()
+	s.toLoad = tokens.Clone()
+	return nil
+}
+
+func (s *refreshTokenStore) DeleteTokens(_ context.Context, accountID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.toLoad.AccountID == accountID {
+		s.toLoad.Close()
+		s.toLoad = sdk.TokenSet{}
+	}
+	return nil
+}
+
+// RefreshTokenBundle refreshes the OAuth tokens for the account identified
+// by the bundle. It constructs a new SDK client for the bundle's server
+// identity, seeds the token store with the supplied bundle, calls refresh,
+// and returns the updated TokenBundle with original Email and ServerURL metadata
+// preserved.
+func (c *Client) RefreshTokenBundle(ctx context.Context, tokens coresession.TokenBundle) (coresession.TokenBundle, error) {
+	if c == nil || c.sdk == nil {
+		return coresession.TokenBundle{}, errors.New("bitwarden adapter: client or SDK is nil")
+	}
+	if tokens.AccountID == "" {
+		return coresession.TokenBundle{}, fmt.Errorf("bitwarden adapter: TokenBundle.AccountID must not be empty")
+	}
+
+	toLoad := sdk.TokenSet{
+		AccountID:    tokens.AccountID,
+		AccessToken:  make([]byte, len(tokens.AccessToken)),
+		RefreshToken: make([]byte, len(tokens.RefreshToken)),
+		TokenType:    tokens.TokenType,
+		ExpiresAt:    tokens.ExpiresAt,
+	}
+	copy(toLoad.AccessToken, tokens.AccessToken)
+	copy(toLoad.RefreshToken, tokens.RefreshToken)
+
+	store := newRefreshTokenStore(toLoad)
+
+	opts := []sdk.Option{
+		serverIdentityOption(tokens.ServerURL),
+		sdk.WithTokenStore(store),
+	}
+	if c.httpClient != nil {
+		opts = append(opts, sdk.WithHTTPClient(c.httpClient))
+	}
+	refreshClient, err := sdk.NewClient(opts...)
+	if err != nil {
+		return coresession.TokenBundle{}, fmt.Errorf("bitwarden adapter: creating refresh client: %w", err)
+	}
+	defer func() {
+		_ = refreshClient.Close()
+	}()
+
+	result, err := refreshClient.RefreshSession(ctx, tokens.AccountID)
+	if err != nil {
+		return coresession.TokenBundle{}, err
+	}
+
+	updated := coresession.TokenBundle{
+		AccountID:    result.Tokens.AccountID,
+		Email:        tokens.Email,
+		ServerURL:    tokens.ServerURL,
+		AccessToken:  make([]byte, len(result.Tokens.AccessToken)),
+		RefreshToken: make([]byte, len(result.Tokens.RefreshToken)),
+		TokenType:    result.Tokens.TokenType,
+		ExpiresAt:    result.Tokens.ExpiresAt,
+	}
+	copy(updated.AccessToken, result.Tokens.AccessToken)
+	copy(updated.RefreshToken, result.Tokens.RefreshToken)
+
+	return updated, nil
 }

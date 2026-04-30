@@ -8,6 +8,7 @@ import (
 	"io"
 
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/auth"
+	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
 )
 
@@ -31,4 +32,11 @@ type RemoteVault interface {
 	DownloadAttachment(ctx context.Context, itemID, attachmentID string, dst io.Writer) error
 	UploadAttachment(ctx context.Context, itemID, fileName string, size int64, src io.Reader) (vault.Attachment, error)
 	DeleteAttachment(ctx context.Context, itemID, attachmentID string) error
+
+	// ExportSession returns the current unlocked session material and tokens.
+	ExportSession(ctx context.Context) (session.UnlockMaterial, session.TokenBundle, error)
+	// RestoreSession imports session material and tokens, unlocking the client.
+	RestoreSession(ctx context.Context, material session.UnlockMaterial, tokens session.TokenBundle) error
+	// RefreshTokenBundle refreshes the OAuth tokens for the account identified by the bundle.
+	RefreshTokenBundle(ctx context.Context, tokens session.TokenBundle) (session.TokenBundle, error)
 }

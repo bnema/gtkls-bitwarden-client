@@ -15,6 +15,7 @@ import (
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/cache"
 	coreconfig "github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
 	coreerrors "github.com/bnema/gtk4-layershell-bitwarden/internal/core/errors"
+	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
 	coresync "github.com/bnema/gtk4-layershell-bitwarden/internal/core/sync"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
 	"github.com/stretchr/testify/require"
@@ -269,6 +270,18 @@ func (r *fakeRemote) UploadAttachment(_ context.Context, _ string, _ string, _ i
 
 func (r *fakeRemote) DeleteAttachment(_ context.Context, _, _ string) error {
 	return nil
+}
+
+func (r *fakeRemote) ExportSession(_ context.Context) (session.UnlockMaterial, session.TokenBundle, error) {
+	return session.UnlockMaterial{}, session.TokenBundle{}, fmt.Errorf("fakeRemote: not implemented")
+}
+
+func (r *fakeRemote) RestoreSession(_ context.Context, _ session.UnlockMaterial, _ session.TokenBundle) error {
+	return fmt.Errorf("fakeRemote: not implemented")
+}
+
+func (r *fakeRemote) RefreshTokenBundle(_ context.Context, _ session.TokenBundle) (session.TokenBundle, error) {
+	return session.TokenBundle{}, fmt.Errorf("fakeRemote: not implemented")
 }
 
 type fakeCache struct {
