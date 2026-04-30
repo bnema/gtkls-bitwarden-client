@@ -409,8 +409,6 @@ func newLockCmd(opts Options) *cobra.Command {
 		Short: "Lock the local vault (clears unlock envelope)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_ = os.Unsetenv("BW_SESSION")
-
 			mgr := viperadapter.NewManager(opts.ConfigPath)
 			cfg, err := mgr.Load(cmd.Context())
 			if err != nil {

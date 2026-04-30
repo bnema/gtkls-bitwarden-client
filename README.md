@@ -98,21 +98,33 @@ gtk4-layershell-bitwarden logout
 `login` prompts for missing email, region (`us`, `eu`, or `self_hosted`),
 self-hosted server URL when needed, and master password. It authenticates with
 Bitwarden, stores the email/region/server URL in config, runs initial sync, and
-writes the encrypted cache/outbox under the XDG cache directory. `unlock` uses
-the configured email/region and prompts for the master password. Both commands
-support:
+writes the encrypted cache/outbox under the XDG cache directory. `login` stores
+Bitwarden server tokens (access token, refresh token) in the Linux Secret Service
+keyring and requires a local unlock PIN. The PIN unwraps a short-lived local
+unlock envelope and is never sent to Bitwarden. Secret Service is mandatory on
+Linux; if unavailable, auth commands fail with a `keyring_unavailable` error.
+
+`unlock` uses the configured email/region, prompts for the master password,
+and re-creates the local unlock envelope in the keyring so subsequent opens
+only need the PIN.
+
+`lock` clears the local PIN unlock envelope from the keyring but keeps
+Bitwarden tokens intact.
+
+`logout` removes Bitwarden tokens, the local unlock envelope, the encrypted
+cache, and the encrypted outbox from disk.
+
+All auth commands support:
 
 ```sh
---raw                 # print only a generated session key
+--raw                 # print minimal output ("login ok" or "unlock ok")
 --passwordenv NAME    # read master password from an environment variable
 --passwordfile PATH   # read master password from a file
 --no-sync             # authenticate/unlock without waiting for initial sync
 ```
 
-As with `bw`, successful `login` / `unlock` prints an example `BW_SESSION`
-export. For v0.1.0, this session key is process-local guidance for CLI
-compatibility; persistent vault protection remains the master-password-derived
-encrypted cache key, and the GUI still prompts for the master password.
+The app does **not** use the `BW_SESSION` environment variable. Access tokens,
+refresh tokens, PINs, and vault keys are never printed to stdout or stderr.
 
 On Wayland, the launcher re-execs itself with `libgtk4-layer-shell.so.0` in
 `LD_PRELOAD` before GTK initializes. This matches the sekeve bootstrap and is
