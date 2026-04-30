@@ -29,7 +29,7 @@ type ServiceConfig struct {
 }
 
 const (
-	defaultTTL         = 8 * time.Hour
+	defaultTTL         = 30 * time.Minute
 	defaultMaxFailures = 5
 	defaultKDFTime     = 3
 	defaultKDFMemory   = 64 * 1024
@@ -109,6 +109,9 @@ func (s Service) Create(
 		return session.UnlockEnvelope{}, err
 	}
 
+	// Ensure plaintext is zeroed on every return path after this point.
+	defer clear(plaintext)
+
 	aead, err := chacha20poly1305.NewX(key)
 	if err != nil {
 		clear(key)
@@ -125,7 +128,6 @@ func (s Service) Create(
 	// Encrypt and prepend the nonce.
 	ciphertext := aead.Seal(nil, nonce, plaintext, nil)
 	clear(key)
-	clear(plaintext)
 
 	stored := make([]byte, len(nonce)+len(ciphertext))
 	copy(stored[:len(nonce)], nonce)

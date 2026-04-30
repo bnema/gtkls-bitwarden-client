@@ -193,6 +193,29 @@ func TestOpenEnvelopeRejectsExpiredOrBootChanged(t *testing.T) {
 	})
 }
 
+func TestDefaultTTLIs30Minutes(t *testing.T) {
+	svc := New(ServiceConfig{})
+	ctx := context.Background()
+
+	before := time.Now().UTC()
+	env, err := svc.Create(ctx, testRef, testMaterial(), testPIN, testBootID)
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	after := time.Now().UTC()
+
+	// ExpiresAt should be roughly now+30m. Use a broad window to avoid flakes.
+	// The minimum expected is now+30m (minus a small epsilon for timing).
+	// The maximum is (just-after-Create)+30m or so.
+	wantMin := before.Add(20 * time.Minute)
+	wantMax := after.Add(40 * time.Minute)
+
+	if env.ExpiresAt.Before(wantMin) || env.ExpiresAt.After(wantMax) {
+		t.Fatalf("ExpiresAt %v outside expected window [%v, %v] (implied default TTL of 30m)",
+			env.ExpiresAt, wantMin, wantMax)
+	}
+}
+
 func TestOpenEnvelopeRejectsBackoff(t *testing.T) {
 	svc := New(testConfig())
 	ctx := context.Background()
