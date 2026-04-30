@@ -96,6 +96,9 @@ func New(ctx context.Context, service in.AppService, quit func(), retainFn func(
 		mode := ModeForAuthStatus(status, true)
 		v.mu.Lock()
 		v.state.Mode = mode
+		if status == session.LoggedInLocked {
+			v.state.NeedReLogin = true
+		}
 		v.mu.Unlock()
 		if err != nil {
 			if status == session.KeyringUnavailable {
@@ -111,6 +114,11 @@ func New(ctx context.Context, service in.AppService, quit func(), retainFn func(
 			case ModeKeyringError:
 				v.showError("Secret Service is required")
 			}
+		}
+		// For LoggedInLocked accounts, show a helpful message explaining
+		// that re-login via CLI is required to recreate the PIN envelope.
+		if status == session.LoggedInLocked {
+			v.showError("Local unlock envelope missing. Please run `login` from the terminal to recreate it.")
 		}
 	}
 
@@ -389,6 +397,14 @@ func (v *View) showUnlock() {
 
 // doUnlock runs the unlock flow.
 func (v *View) doUnlock(ctx context.Context) {
+	v.mu.Lock()
+	needReLogin := v.state.NeedReLogin
+	v.mu.Unlock()
+	if needReLogin {
+		v.showError("Local unlock envelope missing. Please run `login` from the terminal to recreate it.")
+		return
+	}
+
 	email := v.emailEntry.GetText()
 	password := v.passwordEntry.GetText()
 

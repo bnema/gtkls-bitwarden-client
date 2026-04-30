@@ -53,6 +53,12 @@ type State struct {
 	DetailID string
 	Status   Status
 	Error    string
+
+	// NeedReLogin is true when the current account is LoggedInLocked
+	// (token bundle exists but PIN envelope is missing). In this state the
+	// legacy master-password unlock path is blocked because it would not
+	// create a PIN envelope.
+	NeedReLogin bool
 }
 
 // NewState returns a State initialised in ModeUnlock with Selected 0.

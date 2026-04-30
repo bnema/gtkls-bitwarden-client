@@ -226,7 +226,7 @@ func TestLoginPromptsForAuthenticatorCode(t *testing.T) {
 	require.Equal(t, "master-password", fake.password)
 }
 
-func TestUnlockUsesConfiguredEmail(t *testing.T) {
+func TestUnlockUsesConfiguredEmailAndPIN(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
 	fake := newFakeAuthService()
@@ -241,7 +241,7 @@ func TestUnlockUsesConfiguredEmail(t *testing.T) {
 	require.NoError(t, err)
 
 	root := NewRootCommand(opts)
-	root.SetArgs([]string{"unlock", "master-password", "--raw", "--no-sync"})
+	root.SetArgs([]string{"unlock", "1234", "--raw", "--no-sync"})
 	outBuf := new(bytes.Buffer)
 	root.SetOut(outBuf)
 	root.SetErr(new(bytes.Buffer))
@@ -249,12 +249,42 @@ func TestUnlockUsesConfiguredEmail(t *testing.T) {
 	err = root.ExecuteContext(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "me@example.com", fake.email)
-	require.Equal(t, "master-password", fake.password)
+	require.Equal(t, "1234", fake.pin, "expected PIN 1234 to be passed to UnlockWithPIN")
 
 	// Output should not contain BW_SESSION or base64 session key.
 	output := outBuf.String()
 	require.NotContains(t, output, "BW_SESSION", "unlock output must not contain BW_SESSION")
 	require.Contains(t, output, "unlock ok")
+}
+
+func TestUnlockPromptsPINFromStdin(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	fake := newFakeAuthService()
+	opts := Options{
+		ConfigPath: configPath,
+		ComposeService: func(context.Context, *coreconfig.Config, string, string) (in.AppService, error) {
+			return fake, nil
+		},
+	}
+
+	_, err := executeCmd(t, opts, []string{"config", "set", "bitwarden.email", "me@example.com"})
+	require.NoError(t, err)
+
+	// Provide PIN via stdin (no arg, no env/file).
+	stdin := strings.NewReader("9999\n")
+	root := NewRootCommand(opts)
+	root.SetArgs([]string{"unlock", "--raw", "--no-sync"})
+	root.SetIn(stdin)
+	outBuf := new(bytes.Buffer)
+	root.SetOut(outBuf)
+	root.SetErr(new(bytes.Buffer))
+
+	err = root.ExecuteContext(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "9999", fake.pin, "expected PIN from stdin to be passed to UnlockWithPIN")
+	require.Equal(t, "me@example.com", fake.email)
+	require.Contains(t, outBuf.String(), "unlock ok")
 }
 
 func TestStatusReportsLockedWhenEmailConfigured(t *testing.T) {
@@ -333,7 +363,6 @@ func TestStatusReportsKeyringUnavailable(t *testing.T) {
 func TestLoginFailsOnKeyringUnavailable(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
-	// Fake that Login returns a keyring-unavailable-style error.
 	fake := &fakeAuthService{
 		events:     make(chan in.Event, 4),
 		authStatus: session.KeyringUnavailable,
@@ -343,9 +372,6 @@ func TestLoginFailsOnKeyringUnavailable(t *testing.T) {
 			Message: "secret service not available",
 		},
 	}
-	// Override Login to return the keyring error.
-	fakeLoginErr := errors.New("credentials.CheckAvailable: secret service not available")
-	fake.loginErr = fakeLoginErr
 	opts := Options{
 		ConfigPath: configPath,
 		ComposeService: func(context.Context, *coreconfig.Config, string, string) (in.AppService, error) {
@@ -353,7 +379,8 @@ func TestLoginFailsOnKeyringUnavailable(t *testing.T) {
 		},
 	}
 
-	stdin := strings.NewReader("1234\n")
+	// stdin has no PIN content — the command must fail before consuming stdin.
+	stdin := strings.NewReader("")
 	root := NewRootCommand(opts)
 	root.SetArgs([]string{"login", "me@example.com", "master-password", "--raw", "--no-sync", "--region", "us"})
 	root.SetIn(stdin)

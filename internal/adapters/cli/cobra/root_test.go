@@ -512,7 +512,7 @@ func TestLogoutNoEmailStillClearsCacheAndOutbox(t *testing.T) {
 	assert.NoFileExists(t, outboxPath, "outbox file should be removed")
 }
 
-func TestLogoutContinuesOnKeyringError(t *testing.T) {
+func TestLogoutFailsOnKeyringError(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
 	cachePath := filepath.Join(dir, "cache.json")
@@ -539,12 +539,10 @@ func TestLogoutContinuesOnKeyringError(t *testing.T) {
 	cmd.SetOut(buf)
 
 	err = cmd.Execute()
-	require.NoError(t, err, "logout should succeed even when keyring is unavailable")
+	require.Error(t, err, "logout should fail when keyring is unavailable")
+	require.Contains(t, err.Error(), "logout")
 
+	// Output must NOT contain "logged out".
 	output := buf.String()
-	assert.Contains(t, output, "logged out")
-
-	// Cache and outbox should still be cleared.
-	assert.NoFileExists(t, cachePath, "cache file should be removed")
-	assert.NoFileExists(t, outboxPath, "outbox file should be removed")
+	assert.NotContains(t, output, "logged out", "output must not contain logged out on keyring error")
 }

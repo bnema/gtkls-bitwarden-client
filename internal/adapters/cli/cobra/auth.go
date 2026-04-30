@@ -54,8 +54,8 @@ func newLoginCmd(opts Options, cachePath, outboxPath string) *cobra.Command {
 func newUnlockCmd(opts Options, cachePath, outboxPath string) *cobra.Command {
 	var auth authOptions
 	cmd := &cobra.Command{
-		Use:   "unlock [password]",
-		Short: "Unlock the local vault cache",
+		Use:   "unlock [pin]",
+		Short: "Unlock the local vault cache with your PIN",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runUnlock(cmd, opts, cachePath, outboxPath, args, auth)
@@ -99,6 +99,30 @@ func runLogin(cmd *cobra.Command, opts Options, cachePath, outboxPath string, ar
 		return err
 	}
 
+	cfg.Bitwarden.Email = email
+	if err := coreconfig.Validate(cfg); err != nil {
+		return err
+	}
+	if err := mgr.Save(cmd.Context(), cfg); err != nil {
+		return fmt.Errorf("save login config: %w", err)
+	}
+
+	// Compose service BEFORE prompting for password/PIN so we can fail-fast
+	// on keyring-unavailable without consuming stdin.
+	svc, err := composeAppService(opts, cmd.Context(), cfg, cachePath, outboxPath)
+	if err != nil {
+		return fmt.Errorf("compose service: %w", err)
+	}
+	defer func() { _ = svc.Shutdown(context.Background()) }()
+
+	status, statusErr := svc.AuthStatus(cmd.Context(), email)
+	if statusErr != nil {
+		return fmt.Errorf("auth status: %w", statusErr)
+	}
+	if status == session.KeyringUnavailable {
+		return fmt.Errorf("Secret Service is required for login")
+	}
+
 	password, err := resolvePassword(cmd, passwordArgs, auth)
 	if err != nil {
 		return err
@@ -108,20 +132,6 @@ func runLogin(cmd *cobra.Command, opts Options, cachePath, outboxPath string, ar
 	if err != nil {
 		return err
 	}
-
-	cfg.Bitwarden.Email = email
-	if err := coreconfig.Validate(cfg); err != nil {
-		return err
-	}
-	if err := mgr.Save(cmd.Context(), cfg); err != nil {
-		return fmt.Errorf("save login config: %w", err)
-	}
-
-	svc, err := composeAppService(opts, cmd.Context(), cfg, cachePath, outboxPath)
-	if err != nil {
-		return fmt.Errorf("compose service: %w", err)
-	}
-	defer func() { _ = svc.Shutdown(context.Background()) }()
 
 	loginInput := coreauth.LoginInput{
 		Email:           email,
@@ -157,7 +167,8 @@ func runUnlock(cmd *cobra.Command, opts Options, cachePath, outboxPath string, a
 		return fmt.Errorf("no configured email; run `gtk4-layershell-bitwarden login <email>` first or set bitwarden.email")
 	}
 
-	password, err := resolvePassword(cmd, args, auth)
+	// Resolve PIN from args, env, file, or prompt (not master password).
+	pin, err := resolvePIN(cmd, args, auth)
 	if err != nil {
 		return err
 	}
@@ -168,7 +179,7 @@ func runUnlock(cmd *cobra.Command, opts Options, cachePath, outboxPath string, a
 	}
 	defer func() { _ = svc.Shutdown(context.Background()) }()
 
-	if err := svc.UnlockWithTwoFactor(cmd.Context(), email, password, promptTwoFactorCode(cmd)); err != nil {
+	if err := svc.UnlockWithPIN(cmd.Context(), email, pin); err != nil {
 		return err
 	}
 	if !auth.noSync {
@@ -253,6 +264,30 @@ func resolveLoginRegion(cmd *cobra.Command, cfg *coreconfig.Config, auth authOpt
 		return fmt.Errorf("unsupported region %q: expected us, eu, or self_hosted", region)
 	}
 	return nil
+}
+
+// resolvePIN resolves the unlock PIN from positional args, --passwordenv,
+// --passwordfile, or an interactive prompt.
+func resolvePIN(cmd *cobra.Command, args []string, auth authOptions) (string, error) {
+	if len(args) > 0 {
+		return args[0], nil
+	}
+	if auth.passwordEnv != "" {
+		value := os.Getenv(auth.passwordEnv)
+		if value == "" {
+			return "", fmt.Errorf("PIN environment variable %s is empty", auth.passwordEnv)
+		}
+		return strings.TrimRight(value, "\r\n"), nil
+	}
+	if auth.passwordFile != "" {
+		data, err := os.ReadFile(auth.passwordFile)
+		if err != nil {
+			return "", fmt.Errorf("read PIN file: %w", err)
+		}
+		return strings.TrimRight(string(data), "\r\n"), nil
+	}
+
+	return promptPIN(cmd.InOrStdin(), cmd.ErrOrStderr())
 }
 
 func resolvePassword(cmd *cobra.Command, args []string, auth authOptions) (string, error) {

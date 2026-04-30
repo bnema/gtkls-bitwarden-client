@@ -352,8 +352,9 @@ func newLogoutCmd(opts Options, cachePath, outboxPath string) *cobra.Command {
 			// Only delete credentials when an email is configured.
 			if cfg.Bitwarden.Email != "" {
 				store := credentialStore(opts)
-				// Best-effort: proceed even if keyring delete fails.
-				_ = deleteCredentialsForConfig(cmd.Context(), store, cfg)
+				if err := deleteCredentialsForConfig(cmd.Context(), store, cfg); err != nil {
+					return fmt.Errorf("logout: %w", err)
+				}
 			}
 
 			if err := clearCacheAndOutbox(cmd.Context(), cachePath, outboxPath); err != nil {
