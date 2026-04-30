@@ -529,7 +529,7 @@ package out
 import ("context"; session "github.com/bnema/gtk4-layershell-bitwarden/internal/core/session")
 type CredentialStore interface { CheckAvailable(ctx context.Context) error; SaveTokenBundle(ctx context.Context, ref session.AccountRef, bundle session.TokenBundle) error; LoadTokenBundle(ctx context.Context, ref session.AccountRef) (session.TokenBundle, error); DeleteTokenBundle(ctx context.Context, ref session.AccountRef) error; SaveUnlockEnvelope(ctx context.Context, ref session.AccountRef, envelope session.UnlockEnvelope) error; LoadUnlockEnvelope(ctx context.Context, ref session.AccountRef) (session.UnlockEnvelope, error); DeleteUnlockEnvelope(ctx context.Context, ref session.AccountRef) error }
 type BootIDProvider interface { BootID(ctx context.Context) (string, error) }
-type PINEnvelopeService interface { Create(ctx context.Context, ref session.AccountRef, material session.UnlockMaterial, pin string, bootID string) (session.UnlockEnvelope, error); Open(ctx context.Context, ref session.AccountRef, envelope session.UnlockEnvelope, pin string, bootID string) (session.UnlockMaterial, error) }
+type PINEnvelopeService interface { Create(ctx context.Context, ref session.AccountRef, material session.UnlockMaterial, pin string, bootID string) (session.UnlockEnvelope, error); Open(ctx context.Context, ref session.AccountRef, envelope session.UnlockEnvelope, pin string, bootID string) (session.UnlockMaterial, session.UnlockEnvelope, error) }
 ```
 
 Create `internal/adapters/secrets/keyring/store.go` with lookup keys based only on `normalize(email)+serverURL`:
@@ -621,7 +621,7 @@ Expected: PASS.
 
 - [ ] **Step 1: Write adapter tests**
 
-Add tests proving `RefreshTokenBundle` calls SDK refresh and returns a new app `TokenBundle`, and nil SDK client returns an error instead of panic.
+Add tests proving `RefreshTokenBundle` calls SDK refresh against the correct region/self-hosted environment, returns a new app `TokenBundle`, and nil SDK client returns an error instead of panic.
 
 - [ ] **Step 2: Implement port**
 
@@ -633,7 +633,7 @@ RestoreSession(ctx context.Context, material session.UnlockMaterial, tokens sess
 RefreshTokenBundle(ctx context.Context, tokens session.TokenBundle) (session.TokenBundle, error)
 ```
 
-Implement in `internal/adapters/remote/bitwarden/client.go` by mapping to SDK `ExportSession`, `RestoreSession`, and `RefreshSession`. `RefreshTokenBundle` must create/use an SDK token store seeded with the supplied bundle, call `RefreshSession(ctx, tokens.AccountID)`, and return updated tokens with original email/server metadata preserved.
+Implement in `internal/adapters/remote/bitwarden/client.go` by mapping to SDK `ExportSession`, `RestoreSession`, and `RefreshSession`. `RefreshTokenBundle` must construct the SDK client for the token bundle server identity before refreshing: use EU endpoints for `https://vault.bitwarden.eu`, US endpoints for `https://vault.bitwarden.com`, and `sdk.WithServerURL(tokens.ServerURL)` for self-hosted URLs. Then seed an SDK token store with the supplied bundle, call `RefreshSession(ctx, tokens.AccountID)`, and return updated tokens with original email/server metadata preserved.
 
 - [ ] **Step 3: Run tests and commit**
 
@@ -779,8 +779,8 @@ Add tests:
 2. load and refresh token bundle
 3. load envelope
 4. get boot id
-5. open envelope via `PINEnvelopeService.Open`
-6. on wrong PIN, save updated envelope or delete after max failures
+5. open envelope via `PINEnvelopeService.Open`, receiving both unlock material and the updated envelope
+6. on wrong PIN, save the updated envelope or delete after max failures
 7. on success, restore remote session and install only cache key/user key needed for immediate operations
 8. clear copied material
 

@@ -185,6 +185,7 @@ Candidate ports:
 
 ```go
 type CredentialStore interface {
+    CheckAvailable(ctx context.Context) error
     SaveTokenBundle(ctx context.Context, ref AccountRef, bundle TokenBundle) error
     LoadTokenBundle(ctx context.Context, ref AccountRef) (TokenBundle, error)
     DeleteTokenBundle(ctx context.Context, ref AccountRef) error
@@ -196,8 +197,11 @@ type CredentialStore interface {
 
 type LocalUnlockService interface {
     CreateEnvelope(ctx context.Context, input CreateEnvelopeInput) (UnlockEnvelope, error)
-    OpenEnvelope(ctx context.Context, envelope UnlockEnvelope, pin string) (CacheUnlockKey, error)
+    OpenEnvelope(ctx context.Context, envelope UnlockEnvelope, pin string) (UnlockMaterial, UnlockEnvelope, error)
 }
+
+// OpenEnvelope returns an updated envelope so wrong-PIN backoff/failure counters
+// can be persisted or deleted after max failures.
 ```
 
 Exact names can change, but the dependency direction must remain:
@@ -212,14 +216,16 @@ Implement `internal/adapters/secrets/keyring` with `github.com/zalando/go-keyrin
 
 Service names should be stable and account/server scoped, for example:
 
-- `gtk4-layershell-bitwarden/token/<account-or-email>/<server-hash>`
-- `gtk4-layershell-bitwarden/unlock/<account-or-email>/<server-hash>`
+- `gtk4-layershell-bitwarden/token/<normalized-email>/<server-hash>`
+- `gtk4-layershell-bitwarden/unlock/<normalized-email>/<server-hash>`
+
+Do not include `AccountId` in the Secret Service lookup key. Startup may only know email and server URL; `AccountId` belongs inside the stored payload.
 
 The adapter serializes token bundles and unlock envelopes as JSON before storing the secret string. Serialization must not be logged.
 
 ### Token refresh integration
 
-The app should use a public SDK refresh capability when an access token is expired or near expiry. After refresh, it saves the new token bundle back to Secret Service before continuing.
+The app should use a public SDK refresh capability when an access token is expired or near expiry. The SDK client used for refresh must be constructed for the token bundle server identity: EU tokens refresh against the EU identity endpoint, US tokens against US, and self-hosted tokens against their configured server URL. After refresh, the app saves the new token bundle back to Secret Service before continuing.
 
 The app should treat refresh failure as an authentication boundary:
 
