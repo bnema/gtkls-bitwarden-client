@@ -120,7 +120,7 @@ func runLogin(cmd *cobra.Command, opts Options, cachePath, outboxPath string, ar
 		return fmt.Errorf("auth status: %w", statusErr)
 	}
 	if status == session.KeyringUnavailable {
-		return fmt.Errorf("Secret Service is required for login")
+		return fmt.Errorf("secret service is required for login")
 	}
 
 	password, err := resolvePassword(cmd, passwordArgs, auth)
