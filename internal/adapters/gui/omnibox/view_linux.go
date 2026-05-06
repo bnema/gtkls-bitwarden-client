@@ -4,7 +4,8 @@ package omnibox
 
 import (
 	"context"
-	"fmt"
+	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,9 +14,11 @@ import (
 	gtklib "github.com/bnema/puregotk/v4/gtk"
 
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/auth"
+	safelog "github.com/bnema/gtk4-layershell-bitwarden/internal/core/logging"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/in"
+	"github.com/bnema/zerowrap"
 )
 
 // View is the GTK omnibox UI. It manages the unlock, search, detail, and form
@@ -53,8 +56,17 @@ type View struct {
 	tempMasterPassword string
 	tempPIN            string
 
+	pendingTwoFactor *twoFactorPrompt
+
 	dynamicHandlers []dynamicHandler
 }
+
+const (
+	genericAuthError      = "Login failed"
+	genericOperationError = "Something went wrong"
+	genericSearchError    = "Search failed"
+	genericSaveError      = "Save failed"
+)
 
 // dynamicHandler tracks a GTK signal connection that must be explicitly
 // disconnected from the puregotk/glib registry, not just dropped from a slice.
@@ -62,6 +74,62 @@ type dynamicHandler struct {
 	obj      *gobject.Object
 	handler  uint
 	callback interface{}
+}
+
+type twoFactorPrompt struct {
+	providers []auth.TwoFactorProvider
+	response  chan twoFactorResponse
+}
+
+type twoFactorResponse struct {
+	provider auth.TwoFactorProvider
+	code     string
+	err      error
+}
+
+func isUserCanceled(err error) bool {
+	return errors.Is(err, context.Canceled)
+}
+
+func logOverlayError(ctx context.Context, operation string, err error) {
+	if err == nil {
+		return
+	}
+	log := zerowrap.FromCtx(ctx).WithFields(map[string]any{
+		zerowrap.FieldComponent: "gui.omnibox",
+		zerowrap.FieldOperation: operation,
+	})
+	log.Error().
+		Str("error_kind", safelog.SafeErrorKind(err)).
+		Str("error_detail", safelog.SafeErrorDetail(err)).
+		Msg("overlay operation failed")
+}
+
+func chooseOverlayTwoFactorProvider(providers []auth.TwoFactorProvider) auth.TwoFactorProvider {
+	for _, provider := range providers {
+		if provider == auth.TwoFactorProviderAuthenticator {
+			return provider
+		}
+	}
+	if len(providers) > 0 {
+		return providers[0]
+	}
+	return auth.TwoFactorProviderAuthenticator
+}
+
+func twoFactorPromptLabel(provider auth.TwoFactorProvider) string {
+	switch provider {
+	case auth.TwoFactorProviderAuthenticator:
+		return "Authenticator code"
+	case auth.TwoFactorProviderEmail:
+		return "Email two-factor code"
+	case auth.TwoFactorProviderYubiKey:
+		return "YubiKey code"
+	case auth.TwoFactorProviderDuo:
+		return "Duo code"
+	default:
+		return "Two-factor code"
+	}
 }
 
 // retainDynamic stores the handler and its owning object so the signal can be
@@ -120,7 +188,8 @@ func New(ctx context.Context, service in.AppService, quit func(), retainFn func(
 		case detail.Status == session.KeyringUnavailable:
 			v.showError("Secret Service is required")
 		case err != nil:
-			v.showError(err.Error())
+			logOverlayError(ctx, "auth_status_detail", err)
+			v.showError(genericOperationError)
 		case mode == ModePINUnlock:
 			placeholderPIN := "Local unlock PIN"
 			v.passwordEntry.SetPlaceholderText(&placeholderPIN)
@@ -190,6 +259,8 @@ func (v *View) buildUI() {
 			v.doPINSetup()
 		case ModePINConfirm:
 			v.doPINConfirm()
+		case ModeTwoFactor:
+			v.doTwoFactorSubmit()
 			// ModeKeyringError: no-op on enter.
 		}
 	}
@@ -332,6 +403,25 @@ func (v *View) AttachKeyController(window *gtklib.Window) {
 			}
 		}
 
+		handleTwoFactor := func() bool {
+			if kv == gdk.KEY_Escape {
+				v.clearPendingTwoFactor()
+				v.state.Back()
+				v.mu.Unlock()
+				idleAddOnce(func() {
+					placeholder := "Master password"
+					v.passwordEntry.SetPlaceholderText(&placeholder)
+					v.passwordEntry.SetText("")
+					v.passwordEntry.SetVisibility(false)
+					v.showError("")
+					v.render()
+				})
+				return true
+			}
+			v.mu.Unlock()
+			return false
+		}
+
 		handleSearch := func() bool {
 			switch kv {
 			case gdk.KEY_Up:
@@ -404,6 +494,8 @@ func (v *View) AttachKeyController(window *gtklib.Window) {
 		switch mode {
 		case ModeUnlock, ModePINUnlock, ModeKeyringError, ModePINRenew:
 			return handleUnlock()
+		case ModeTwoFactor:
+			return handleTwoFactor()
 		case ModePINSetup, ModePINConfirm:
 			return handlePINSetup()
 		case ModeSearch:
@@ -428,7 +520,7 @@ func (v *View) GrabFocus() {
 	defer v.mu.Unlock()
 
 	switch v.state.Mode {
-	case ModeUnlock, ModePINUnlock, ModePINRenew, ModeKeyringError, ModePINSetup, ModePINConfirm:
+	case ModeUnlock, ModePINUnlock, ModePINRenew, ModeKeyringError, ModePINSetup, ModePINConfirm, ModeTwoFactor:
 		if v.emailEntry.GetText() == "" {
 			v.emailEntry.GrabFocus()
 		} else {
@@ -467,6 +559,96 @@ func (v *View) ClearSensitiveState() {
 func (v *View) clearTempFields() {
 	v.tempMasterPassword = ""
 	v.tempPIN = ""
+	v.clearPendingTwoFactor()
+}
+
+func (v *View) clearPendingTwoFactor() {
+	if v.pendingTwoFactor != nil {
+		select {
+		case v.pendingTwoFactor.response <- twoFactorResponse{err: context.Canceled}:
+		default:
+		}
+		v.pendingTwoFactor = nil
+	}
+}
+
+func (v *View) overlayTwoFactorPrompt() auth.TwoFactorPrompt {
+	return func(ctx context.Context, providers []auth.TwoFactorProvider) (auth.TwoFactorProvider, string, bool, error) {
+		prompt := &twoFactorPrompt{
+			providers: append([]auth.TwoFactorProvider(nil), providers...),
+			response:  make(chan twoFactorResponse, 1),
+		}
+		provider := chooseOverlayTwoFactorProvider(prompt.providers)
+		label := twoFactorPromptLabel(provider)
+
+		idleAddOnce(func() {
+			v.mu.Lock()
+			v.clearPendingTwoFactor()
+			v.pendingTwoFactor = prompt
+			v.state.Mode = ModeTwoFactor
+			v.state.Error = ""
+			v.mu.Unlock()
+
+			v.passwordEntry.SetText("")
+			v.passwordEntry.SetVisibility(false)
+			v.passwordEntry.SetPlaceholderText(&label)
+			v.showError("")
+			v.render()
+			v.passwordEntry.GrabFocus()
+		})
+
+		select {
+		case <-ctx.Done():
+			idleAddOnce(func() {
+				v.mu.Lock()
+				if v.pendingTwoFactor == prompt {
+					v.pendingTwoFactor = nil
+					v.state.Mode = ModeUnlock
+					v.mu.Unlock()
+
+					placeholder := "Master password"
+					v.passwordEntry.SetPlaceholderText(&placeholder)
+					v.passwordEntry.SetText("")
+					v.passwordEntry.SetVisibility(false)
+					v.showError("")
+					v.render()
+					return
+				}
+				v.mu.Unlock()
+			})
+			return "", "", false, ctx.Err()
+		case response := <-prompt.response:
+			return response.provider, response.code, false, response.err
+		}
+	}
+}
+
+func (v *View) doTwoFactorSubmit() {
+	code := strings.TrimSpace(v.passwordEntry.GetText())
+	if code == "" {
+		v.showError("Two-factor code is required")
+		return
+	}
+
+	v.mu.Lock()
+	prompt := v.pendingTwoFactor
+	v.pendingTwoFactor = nil
+	v.mu.Unlock()
+	if prompt == nil {
+		v.showError(genericAuthError)
+		return
+	}
+
+	response := twoFactorResponse{
+		provider: chooseOverlayTwoFactorProvider(prompt.providers),
+		code:     code,
+	}
+	select {
+	case prompt.response <- response:
+		v.showError("")
+	default:
+		v.showError(genericAuthError)
+	}
 }
 
 // doUnlock runs in ModeUnlock (unauthenticated). Since there is no login
@@ -500,15 +682,20 @@ func (v *View) doPINRenew(ctx context.Context) {
 
 	go func() {
 		err := v.service.RenewUnlockEnvelope(ctx, auth.RenewEnvelopeInput{
-			Email:       email,
-			Password:    password,
-			SetupNewPIN: false,
+			Email:           email,
+			Password:        password,
+			TwoFactorPrompt: v.overlayTwoFactorPrompt(),
+			SetupNewPIN:     false,
 		})
 
 		idleAddOnce(func() { v.passwordEntry.SetText("") })
 
 		if err != nil {
-			v.showError(err.Error())
+			if isUserCanceled(err) {
+				return
+			}
+			logOverlayError(ctx, "renew_unlock_envelope", err)
+			v.showError(genericAuthError)
 			return
 		}
 
@@ -620,10 +807,11 @@ func (v *View) doPINConfirm() {
 
 	go func() {
 		err := v.service.RenewUnlockEnvelope(v.ctx, auth.RenewEnvelopeInput{
-			Email:       email,
-			Password:    masterPassword,
-			PIN:         storedPIN,
-			SetupNewPIN: true,
+			Email:           email,
+			Password:        masterPassword,
+			PIN:             storedPIN,
+			TwoFactorPrompt: v.overlayTwoFactorPrompt(),
+			SetupNewPIN:     true,
 		})
 
 		// Clear temp fields regardless of outcome.
@@ -632,7 +820,11 @@ func (v *View) doPINConfirm() {
 		v.mu.Unlock()
 
 		if err != nil {
-			v.showError(err.Error())
+			if isUserCanceled(err) {
+				return
+			}
+			logOverlayError(v.ctx, "setup_pin_envelope", err)
+			v.showError(genericAuthError)
 			// Return to ModeUnlock on failure.
 			idleAddOnce(func() {
 				placeholder := "Master password"
@@ -684,7 +876,8 @@ func (v *View) doPINUnlock(ctx context.Context) {
 	go func() {
 		unlockErr := v.service.UnlockWithPIN(ctx, email, pin)
 		if unlockErr != nil {
-			v.showError(unlockErr.Error())
+			logOverlayError(ctx, "unlock_with_pin", unlockErr)
+			v.showError(genericAuthError)
 			return
 		}
 
@@ -717,9 +910,10 @@ func (v *View) loadAllItems() {
 	go func() {
 		items, err := v.service.Items(v.ctx)
 		if err != nil {
+			logOverlayError(v.ctx, "load_items", err)
 			idleAddOnce(func() {
 				v.mu.Lock()
-				v.state.Error = fmt.Sprintf("Failed to load items: %v", err)
+				v.state.Error = genericOperationError
 				v.mu.Unlock()
 				v.render()
 			})
@@ -761,9 +955,10 @@ func (v *View) doSearch(query string) {
 		defer v.searchLock.Unlock()
 		results, err := v.service.Search(v.ctx, query, 50)
 		if err != nil {
+			logOverlayError(v.ctx, "search", err)
 			idleAddOnce(func() {
 				v.mu.Lock()
-				v.state.SetStatus(Status{Text: "Search failed", Error: err.Error()})
+				v.state.SetStatus(Status{Text: genericSearchError, Error: genericSearchError})
 				v.mu.Unlock()
 				v.renderStatus()
 			})
@@ -816,9 +1011,10 @@ func (v *View) loadDetail(id string) {
 	go func() {
 		item, err := v.service.Get(v.ctx, id)
 		if err != nil {
+			logOverlayError(v.ctx, "load_detail", err)
 			idleAddOnce(func() {
 				v.mu.Lock()
-				v.state.Error = fmt.Sprintf("Failed to load detail: %v", err)
+				v.state.Error = genericOperationError
 				v.mu.Unlock()
 				v.render()
 			})
@@ -852,7 +1048,7 @@ func (v *View) render() {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
-	v.unlockBox.SetVisible(v.state.Mode == ModeUnlock || v.state.Mode == ModePINUnlock || v.state.Mode == ModePINRenew || v.state.Mode == ModeKeyringError || v.state.Mode == ModePINSetup || v.state.Mode == ModePINConfirm)
+	v.unlockBox.SetVisible(v.state.Mode == ModeUnlock || v.state.Mode == ModePINUnlock || v.state.Mode == ModePINRenew || v.state.Mode == ModeKeyringError || v.state.Mode == ModePINSetup || v.state.Mode == ModePINConfirm || v.state.Mode == ModeTwoFactor)
 	v.searchBox.SetVisible(v.state.Mode == ModeSearch)
 	v.detailBox.SetVisible(v.state.Mode == ModeDetail)
 	v.formBox.SetVisible(v.state.Mode == ModeForm)
@@ -1044,7 +1240,8 @@ func (v *View) renderDetail(detail Detail) {
 		trashCb := func(_ gtklib.Button) {
 			go func() {
 				if err := v.service.Trash(v.ctx, detail.ID); err != nil {
-					v.showError(err.Error())
+					logOverlayError(v.ctx, "trash", err)
+					v.showError(genericOperationError)
 					return
 				}
 				idleAddOnce(func() {
@@ -1063,7 +1260,8 @@ func (v *View) renderDetail(detail Detail) {
 		restoreCb := func(_ gtklib.Button) {
 			go func() {
 				if _, err := v.service.Restore(v.ctx, detail.ID); err != nil {
-					v.showError(err.Error())
+					logOverlayError(v.ctx, "restore", err)
+					v.showError(genericOperationError)
 					return
 				}
 				idleAddOnce(func() {
@@ -1082,7 +1280,8 @@ func (v *View) renderDetail(detail Detail) {
 		deleteCb := func(_ gtklib.Button) {
 			go func() {
 				if err := v.service.Delete(v.ctx, detail.ID); err != nil {
-					v.showError(err.Error())
+					logOverlayError(v.ctx, "delete", err)
+					v.showError(genericOperationError)
 					return
 				}
 				idleAddOnce(func() {
@@ -1226,9 +1425,14 @@ func (v *View) renderForm(item vault.Item) {
 				result, err = v.service.Create(v.ctx, updated)
 			}
 			if err != nil {
+				operation := "create"
+				if isUpdate {
+					operation = "update"
+				}
+				logOverlayError(v.ctx, operation, err)
 				idleAddOnce(func() {
 					v.mu.Lock()
-					v.state.Error = err.Error()
+					v.state.Error = genericSaveError
 					v.mu.Unlock()
 					v.render()
 				})

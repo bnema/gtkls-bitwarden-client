@@ -256,3 +256,10 @@ func TestBack_PINRenew(t *testing.T) {
 	s.Back()
 	require.Equal(t, ModeUnlock, s.Mode, "Back from PINRenew should go to ModeUnlock")
 }
+
+func TestBack_TwoFactor(t *testing.T) {
+	s := NewState()
+	s.Mode = ModeTwoFactor
+	s.Back()
+	require.Equal(t, ModeUnlock, s.Mode, "Back from ModeTwoFactor should go to ModeUnlock")
+}

@@ -18,6 +18,7 @@ const (
 	ModeForm
 	ModePINSetup
 	ModePINConfirm
+	ModeTwoFactor
 )
 
 // Action represents a user action that can be taken on a row.
@@ -121,8 +122,9 @@ func (s *State) OpenDetail() {
 
 // Back transitions to the previous logical mode based on current mode.
 // ModeDetail/Form → ModeSearch. ModePINConfirm → ModePINSetup.
-// ModePINSetup → ModeUnlock. From unlock/keyring/search modes Back is a
-// no-op (caller can use Escape to quit or close).
+// ModePINSetup → ModeUnlock. ModeTwoFactor → ModeUnlock.
+// From unlock/keyring/search modes Back is a no-op (caller can use Escape to
+// quit or close).
 func (s *State) Back() {
 	switch s.Mode {
 	case ModeSearch:
@@ -134,7 +136,7 @@ func (s *State) Back() {
 		s.Mode = ModePINSetup
 	case ModePINSetup:
 		s.Mode = ModeUnlock
-	case ModePINRenew:
+	case ModePINRenew, ModeTwoFactor:
 		s.Mode = ModeUnlock
 	case ModeUnlock, ModePINUnlock, ModeKeyringError:
 		// Can't go back from unlock/keyring error; caller should ignore.

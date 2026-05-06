@@ -57,6 +57,22 @@ func BuildCSS(p coretheme.Palette, scale float64) string {
   color: var(--glsbw-fg);
 }
 
+entry, passwordentry, searchentry, textview {
+  background-color: var(--glsbw-bg);
+  color: var(--glsbw-fg);
+  border: 1px solid var(--glsbw-row-hover);
+  border-radius: var(--glsbw-radius);
+  padding: calc(var(--glsbw-scale) * 0.25em) calc(var(--glsbw-scale) * 0.5em);
+}
+
+entry:focus, entry:focus-within,
+passwordentry:focus, passwordentry:focus-within,
+searchentry:focus, searchentry:focus-within,
+textview:focus, textview:focus-within {
+  border-color: var(--glsbw-accent);
+  box-shadow: 0 0 0 1px var(--glsbw-accent);
+}
+
 .glsbw-row {
   height: var(--glsbw-row-height);
   padding: var(--glsbw-padding);

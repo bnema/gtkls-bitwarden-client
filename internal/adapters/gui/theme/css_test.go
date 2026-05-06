@@ -31,6 +31,9 @@ func TestBuildCSS_DefaultDarkPalette_Scale1_2(t *testing.T) {
 	if !strings.Contains(css, ".glsbw-row") {
 		t.Errorf("expected .glsbw-row selector")
 	}
+	if !strings.Contains(css, "entry, passwordentry, searchentry, textview") {
+		t.Errorf("expected dark input selectors")
+	}
 	if !strings.Contains(css, ".glsbw-title") {
 		t.Errorf("expected .glsbw-title selector")
 	}
@@ -67,6 +70,21 @@ func TestBuildCSS_ClampsHighScale(t *testing.T) {
 	css := BuildCSS(coretheme.DefaultDarkPalette(), 5.0)
 	if !strings.Contains(css, "--glsbw-scale: 3.00") {
 		t.Errorf("expected scale clamped to 3.00 for input 5.0, got:\n%s", css)
+	}
+}
+
+func TestBuildCSS_DarkInputsUsePaletteColors(t *testing.T) {
+	p := coretheme.DefaultDarkPalette()
+	css := BuildCSS(p, 1.0)
+
+	if !strings.Contains(css, "entry, passwordentry, searchentry, textview") {
+		t.Fatalf("expected input styling selector in CSS")
+	}
+	if !strings.Contains(css, "background-color: var(--glsbw-bg)") {
+		t.Fatalf("expected inputs to use dark background variable")
+	}
+	if !strings.Contains(css, p.Bg) || !strings.Contains(css, p.Fg) {
+		t.Fatalf("expected palette colors in CSS")
 	}
 }
 

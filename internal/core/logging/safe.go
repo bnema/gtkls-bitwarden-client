@@ -4,11 +4,20 @@ package logging
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"unicode"
 )
 
 const redactedValue = "[REDACTED]"
+
+var (
+	emailPattern         = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+	urlPattern           = regexp.MustCompile(`(?i)https?://\S+`)
+	uuidPattern          = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
+	longOpaquePattern    = regexp.MustCompile(`\b[A-Za-z0-9_-]{24,}\b`)
+	secretAssignmentExpr = regexp.MustCompile(`(?i)\b(password|pin|token|secret|key|auth|code|session|payload|envelope)=\S+`)
+)
 
 var sensitiveKeyWords = []string{
 	"password",
@@ -56,6 +65,29 @@ func SafeValue(key string, value any) any {
 		return SafeErrorKind(err)
 	}
 	return value
+}
+
+// SafeErrorDetail returns sanitized diagnostic text for err.
+//
+// It is intended for debug logs where a coarse kind is not enough. It redacts
+// common PII/secrets and bounds the output so UI code can log useful backend
+// details without exposing raw credentials, 2FA codes, emails, or token-like
+// fields.
+func SafeErrorDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	detail := err.Error()
+	detail = emailPattern.ReplaceAllString(detail, redactedValue)
+	detail = urlPattern.ReplaceAllString(detail, redactedValue)
+	detail = uuidPattern.ReplaceAllString(detail, redactedValue)
+	detail = longOpaquePattern.ReplaceAllString(detail, redactedValue)
+	detail = secretAssignmentExpr.ReplaceAllString(detail, "$1="+redactedValue)
+	const maxErrorDetailRunes = 512
+	if runes := []rune(detail); len(runes) > maxErrorDetailRunes {
+		detail = string(runes[:maxErrorDetailRunes]) + "…"
+	}
+	return detail
 }
 
 // SafeErrorKind returns a logging-safe category for err without exposing the
