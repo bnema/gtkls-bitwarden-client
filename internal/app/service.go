@@ -111,10 +111,10 @@ func (s *Service) Login(ctx context.Context, input auth.LoginInput) (retErr erro
 	}
 
 	// Ensure local unlocked state/plaintext is cleared on any error after unlock.
-	// Use context.Background() so the lock cleanup is not cancelled by ctx.
+	// Detach from cancellation while preserving logger values for cleanup.
 	defer func() {
 		if retErr != nil {
-			_ = s.Lock(context.Background())
+			_ = s.Lock(context.WithoutCancel(ctx))
 		}
 	}()
 
@@ -504,9 +504,10 @@ func (s *Service) RenewUnlockEnvelope(ctx context.Context, input auth.RenewEnvel
 	}
 
 	// Ensure local unlocked state/plaintext is cleared on any error after unlock.
+	// Detach from cancellation while preserving logger values for cleanup.
 	defer func() {
 		if retErr != nil {
-			_ = s.Lock(context.Background())
+			_ = s.Lock(context.WithoutCancel(ctx))
 		}
 	}()
 
@@ -643,9 +644,10 @@ func (s *Service) UnlockAndCreateEnvelope(ctx context.Context, email, password, 
 	}
 
 	// Ensure local unlocked state/plaintext is cleared on any error after unlock.
+	// Detach from cancellation while preserving logger values for cleanup.
 	defer func() {
 		if retErr != nil {
-			_ = s.Lock(context.Background())
+			_ = s.Lock(context.WithoutCancel(ctx))
 		}
 	}()
 
@@ -804,8 +806,8 @@ func (s *Service) unlock(ctx context.Context, email, password string, prompt aut
 		s.emit(IndexReady, "search index ready")
 	}
 
-	// Start background sync worker rooted at context.Background().
-	workerCtx, cancel := context.WithCancel(context.Background())
+	// Start background sync worker detached from cancellation while preserving logger values.
+	workerCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	s.cancelWorkers = cancel
 	s.emit(Unlocking, "starting sync worker")
 

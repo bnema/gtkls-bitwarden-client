@@ -24,6 +24,7 @@ type View struct {
 	Root *gtklib.Box
 
 	service in.AppService
+	ctx     context.Context
 	state   State
 	quit    func()
 	retain  func(interface{})
@@ -85,6 +86,7 @@ func (v *View) resetDynamicCallbacks() {
 func New(ctx context.Context, service in.AppService, quit func(), retainFn func(interface{})) *View {
 	v := &View{
 		service: service,
+		ctx:     ctx,
 		state:   NewState(),
 		quit:    quit,
 		retain:  retainFn,
@@ -179,11 +181,11 @@ func (v *View) buildUI() {
 		v.mu.Unlock()
 		switch mode {
 		case ModeUnlock:
-			v.doUnlock(context.Background())
+			v.doUnlock(v.ctx)
 		case ModePINUnlock:
-			v.doPINUnlock(context.Background())
+			v.doPINUnlock(v.ctx)
 		case ModePINRenew:
-			v.doPINRenew(context.Background())
+			v.doPINRenew(v.ctx)
 		case ModePINSetup:
 			v.doPINSetup()
 		case ModePINConfirm:
@@ -617,7 +619,7 @@ func (v *View) doPINConfirm() {
 	v.showError("")
 
 	go func() {
-		err := v.service.RenewUnlockEnvelope(context.Background(), auth.RenewEnvelopeInput{
+		err := v.service.RenewUnlockEnvelope(v.ctx, auth.RenewEnvelopeInput{
 			Email:       email,
 			Password:    masterPassword,
 			PIN:         storedPIN,
@@ -713,7 +715,7 @@ func (v *View) doPINUnlock(ctx context.Context) {
 // loadAllItems fetches items in a goroutine and updates rows.
 func (v *View) loadAllItems() {
 	go func() {
-		items, err := v.service.Items(context.Background())
+		items, err := v.service.Items(v.ctx)
 		if err != nil {
 			idleAddOnce(func() {
 				v.mu.Lock()
@@ -757,7 +759,7 @@ func (v *View) doSearch(query string) {
 	}
 	go func() {
 		defer v.searchLock.Unlock()
-		results, err := v.service.Search(context.Background(), query, 50)
+		results, err := v.service.Search(v.ctx, query, 50)
 		if err != nil {
 			idleAddOnce(func() {
 				v.mu.Lock()
@@ -812,7 +814,7 @@ func (v *View) doPrimaryAction() {
 // loadDetail fetches a single item and renders the detail view.
 func (v *View) loadDetail(id string) {
 	go func() {
-		item, err := v.service.Get(context.Background(), id)
+		item, err := v.service.Get(v.ctx, id)
 		if err != nil {
 			idleAddOnce(func() {
 				v.mu.Lock()
@@ -1041,7 +1043,7 @@ func (v *View) renderDetail(detail Detail) {
 		trashBtn := gtklib.NewButtonWithLabel("Trash")
 		trashCb := func(_ gtklib.Button) {
 			go func() {
-				if err := v.service.Trash(context.Background(), detail.ID); err != nil {
+				if err := v.service.Trash(v.ctx, detail.ID); err != nil {
 					v.showError(err.Error())
 					return
 				}
@@ -1060,7 +1062,7 @@ func (v *View) renderDetail(detail Detail) {
 		restoreBtn := gtklib.NewButtonWithLabel("Restore")
 		restoreCb := func(_ gtklib.Button) {
 			go func() {
-				if _, err := v.service.Restore(context.Background(), detail.ID); err != nil {
+				if _, err := v.service.Restore(v.ctx, detail.ID); err != nil {
 					v.showError(err.Error())
 					return
 				}
@@ -1079,7 +1081,7 @@ func (v *View) renderDetail(detail Detail) {
 		deleteBtn := gtklib.NewButtonWithLabel("Delete permanently")
 		deleteCb := func(_ gtklib.Button) {
 			go func() {
-				if err := v.service.Delete(context.Background(), detail.ID); err != nil {
+				if err := v.service.Delete(v.ctx, detail.ID); err != nil {
 					v.showError(err.Error())
 					return
 				}
@@ -1219,9 +1221,9 @@ func (v *View) renderForm(item vault.Item) {
 			var result vault.Item
 			var err error
 			if isUpdate {
-				result, err = v.service.Update(context.Background(), current.ID, updated)
+				result, err = v.service.Update(v.ctx, current.ID, updated)
 			} else {
-				result, err = v.service.Create(context.Background(), updated)
+				result, err = v.service.Create(v.ctx, updated)
 			}
 			if err != nil {
 				idleAddOnce(func() {

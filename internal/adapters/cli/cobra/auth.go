@@ -122,7 +122,7 @@ func runLogin(cmd *cobra.Command, opts Options, cachePath, outboxPath string, ar
 	if err != nil {
 		return fmt.Errorf("compose service: %w", err)
 	}
-	defer func() { _ = svc.Shutdown(context.Background()) }()
+	defer func() { _ = svc.Shutdown(context.WithoutCancel(cmd.Context())) }()
 
 	status, statusErr := svc.AuthStatus(cmd.Context(), email)
 	if statusErr != nil {
@@ -194,7 +194,7 @@ func runUnlock(cmd *cobra.Command, opts Options, cachePath, outboxPath string, a
 	if err != nil {
 		return fmt.Errorf("compose service: %w", err)
 	}
-	defer func() { _ = svc.Shutdown(context.Background()) }()
+	defer func() { _ = svc.Shutdown(context.WithoutCancel(cmd.Context())) }()
 
 	detail, detailErr := svc.AuthStatusDetail(cmd.Context(), email)
 	if detailErr != nil {
@@ -500,7 +500,7 @@ func newStatusCmd(opts Options, cachePath, outboxPath string) *cobra.Command {
 				if serr != nil {
 					return fmt.Errorf("compose service: %w", serr)
 				}
-				defer func() { _ = svc.Shutdown(context.Background()) }()
+				defer func() { _ = svc.Shutdown(context.WithoutCancel(cmd.Context())) }()
 
 				detail, derr := svc.AuthStatusDetail(cmd.Context(), email)
 				if derr != nil {
