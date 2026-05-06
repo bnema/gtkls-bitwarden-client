@@ -76,6 +76,19 @@ func logAppServiceFinish(log zerowrap.Logger, started time.Time, err error) {
 	event.Int64(zerowrap.FieldDuration, time.Since(started).Milliseconds()).Msg(msg)
 }
 
+func logAppServiceFinishCount(log zerowrap.Logger, started time.Time, err error, count int) {
+	event := log.Info()
+	msg := "app service operation finished"
+	if err != nil {
+		event = log.Error().Str("error_kind", safelog.SafeErrorKind(err))
+		msg = "app service operation failed"
+	}
+	event.
+		Int("count", count).
+		Int64(zerowrap.FieldDuration, time.Since(started).Milliseconds()).
+		Msg(msg)
+}
+
 // NewService creates a new Service with the given dependencies.
 func NewService(deps Deps) *Service {
 	cfg := deps.Config
@@ -859,6 +872,11 @@ func (s *Service) unlock(ctx context.Context, email, password string, prompt aut
 // items, folders, outbox mutations, derived cache key, salt, and whether
 // data was loaded. It does NOT install state on the service.
 func (s *Service) loadCacheData(ctx context.Context, password string) (items []vault.Item, folders []vault.Folder, outbox []coresync.OutboxMutation, key []byte, salt []byte, loaded bool, err error) {
+	log, started := logAppServiceStart(ctx, "cache_load_data")
+	defer func() {
+		logAppServiceFinishCount(log, started, err, len(items)+len(folders)+len(outbox))
+	}()
+
 	salt, err = newCacheSalt()
 	if err != nil {
 		return nil, nil, nil, nil, nil, false, fmt.Errorf("cache salt: %w", err)
@@ -934,6 +952,12 @@ func (s *Service) loadCacheData(ctx context.Context, password string) (items []v
 		if loadErr == nil && len(storedMutations) > 0 {
 			outbox = append(outbox, storedMutations...)
 		}
+		if loadErr != nil {
+			log.Warn().
+				Str(zerowrap.FieldOperation, "outbox_load_data").
+				Str("error_kind", safelog.SafeErrorKind(loadErr)).
+				Msg("outbox load skipped")
+		}
 	}
 
 	// Deduplicate outbox mutations by ID, preserving first occurrence.
@@ -956,7 +980,10 @@ func (s *Service) loadCacheData(ctx context.Context, password string) (items []v
 // items, folders, and outbox mutations. It zeros plaintext buffers after
 // decode and does not install any state on the service. If the cache is
 // missing, empty, or unavailable, nil slices and nil error are returned.
-func (s *Service) loadCachedVaultWithKey(ctx context.Context, key []byte) ([]vault.Item, []vault.Folder, []coresync.OutboxMutation, error) {
+func (s *Service) loadCachedVaultWithKey(ctx context.Context, key []byte) (items []vault.Item, folders []vault.Folder, outbox []coresync.OutboxMutation, retErr error) {
+	log, started := logAppServiceStart(ctx, "cache_load_with_material")
+	defer func() { logAppServiceFinishCount(log, started, retErr, len(items)+len(folders)+len(outbox)) }()
+
 	if s.deps.Cache == nil || s.deps.SecretBox == nil {
 		return nil, nil, nil, nil
 	}
@@ -992,17 +1019,14 @@ func (s *Service) loadCachedVaultWithKey(ctx context.Context, key []byte) ([]vau
 		return nil, nil, nil, fmt.Errorf("cache decode: %w", err)
 	}
 
-	var items []vault.Item
 	if err := json.Unmarshal(plain.ItemsJSON, &items); err != nil {
 		return nil, nil, nil, fmt.Errorf("cache items decode: %w", err)
 	}
 
-	var folders []vault.Folder
 	if err := json.Unmarshal(plain.FoldersJSON, &folders); err != nil {
 		return nil, nil, nil, fmt.Errorf("cache folders decode: %w", err)
 	}
 
-	var outbox []coresync.OutboxMutation
 	if len(plain.OutboxJSON) > 0 {
 		if err := json.Unmarshal(plain.OutboxJSON, &outbox); err != nil {
 			return nil, nil, nil, fmt.Errorf("cache outbox decode: %w", err)
@@ -1409,24 +1433,17 @@ func (s *Service) saveCacheAsyncLocked(ctx context.Context) {
 		defer s.saveWG.Done()
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		log := zerowrap.FromCtx(cleanupCtx).WithField(zerowrap.FieldComponent, "app.service")
 
 		if outboxStore != nil {
-			if err := outboxStore.Save(cleanupCtx, key, outboxSnap); err != nil {
-				log.Error().
-					Str(zerowrap.FieldOperation, "save_outbox").
-					Str("error_kind", safelog.SafeErrorKind(err)).
-					Msg("outbox save failed")
-			}
+			outboxLog, outboxStarted := logAppServiceStart(cleanupCtx, "save_outbox")
+			err := outboxStore.Save(cleanupCtx, key, outboxSnap)
+			logAppServiceFinishCount(outboxLog, outboxStarted, err, len(outboxSnap))
 		}
 
 		if cacheStore != nil && box != nil && len(salt) > 0 {
-			if err := saveEncryptedSnapshot(cleanupCtx, cacheStore, box, key, salt, accountHash, itemsSnap, foldersSnap, outboxSnap); err != nil {
-				log.Error().
-					Str(zerowrap.FieldOperation, "save_cache").
-					Str("error_kind", safelog.SafeErrorKind(err)).
-					Msg("cache save failed")
-			}
+			cacheLog, cacheStarted := logAppServiceStart(cleanupCtx, "save_cache")
+			err := saveEncryptedSnapshot(cleanupCtx, cacheStore, box, key, salt, accountHash, itemsSnap, foldersSnap, outboxSnap)
+			logAppServiceFinishCount(cacheLog, cacheStarted, err, len(itemsSnap)+len(foldersSnap)+len(outboxSnap))
 		}
 	}()
 }
@@ -1715,7 +1732,16 @@ func saveEncryptedSnapshot(ctx context.Context, store interface {
 
 // Create creates a new vault item. If remote is available, it tries to create
 // online first. On failure or offline, it queues a pending mutation.
-func (s *Service) Create(ctx context.Context, item vault.Item) (vault.Item, error) {
+func (s *Service) Create(ctx context.Context, item vault.Item) (retItem vault.Item, retErr error) {
+	log, started := logAppServiceStart(ctx, "mutation_create")
+	defer func() {
+		count := 0
+		if retErr == nil && retItem.ID != "" {
+			count = 1
+		}
+		logAppServiceFinishCount(log, started, retErr, count)
+	}()
+
 	s.mu.Lock()
 	if err := s.ensureUnlocked(); err != nil {
 		s.mu.Unlock()
@@ -1773,7 +1799,16 @@ func (s *Service) Create(ctx context.Context, item vault.Item) (vault.Item, erro
 
 // Update updates an existing vault item. Tries remote first, falls back to
 // local pending mutation.
-func (s *Service) Update(ctx context.Context, id string, item vault.Item) (vault.Item, error) {
+func (s *Service) Update(ctx context.Context, id string, item vault.Item) (retItem vault.Item, retErr error) {
+	log, started := logAppServiceStart(ctx, "mutation_update")
+	defer func() {
+		count := 0
+		if retErr == nil && retItem.ID != "" {
+			count = 1
+		}
+		logAppServiceFinishCount(log, started, retErr, count)
+	}()
+
 	s.mu.Lock()
 	if err := s.ensureUnlocked(); err != nil {
 		s.mu.Unlock()
@@ -1840,7 +1875,16 @@ func (s *Service) Update(ctx context.Context, id string, item vault.Item) (vault
 }
 
 // Trash moves an item to the trash. Tries remote first, falls back to local pending.
-func (s *Service) Trash(ctx context.Context, id string) error {
+func (s *Service) Trash(ctx context.Context, id string) (retErr error) {
+	log, started := logAppServiceStart(ctx, "mutation_trash")
+	defer func() {
+		count := 0
+		if retErr == nil {
+			count = 1
+		}
+		logAppServiceFinishCount(log, started, retErr, count)
+	}()
+
 	s.mu.Lock()
 	if err := s.ensureUnlocked(); err != nil {
 		s.mu.Unlock()
@@ -1900,7 +1944,16 @@ func (s *Service) Trash(ctx context.Context, id string) error {
 }
 
 // Restore restores an item from the trash. Tries remote first, falls back to local pending.
-func (s *Service) Restore(ctx context.Context, id string) (vault.Item, error) {
+func (s *Service) Restore(ctx context.Context, id string) (retItem vault.Item, retErr error) {
+	log, started := logAppServiceStart(ctx, "mutation_restore")
+	defer func() {
+		count := 0
+		if retErr == nil && retItem.ID != "" {
+			count = 1
+		}
+		logAppServiceFinishCount(log, started, retErr, count)
+	}()
+
 	s.mu.Lock()
 	if err := s.ensureUnlocked(); err != nil {
 		s.mu.Unlock()
@@ -1963,7 +2016,16 @@ func (s *Service) Restore(ctx context.Context, id string) (vault.Item, error) {
 }
 
 // Delete permanently deletes a vault item. Tries remote first, falls back to local pending.
-func (s *Service) Delete(ctx context.Context, id string) error {
+func (s *Service) Delete(ctx context.Context, id string) (retErr error) {
+	log, started := logAppServiceStart(ctx, "mutation_delete")
+	defer func() {
+		count := 0
+		if retErr == nil {
+			count = 1
+		}
+		logAppServiceFinishCount(log, started, retErr, count)
+	}()
+
 	s.mu.Lock()
 	if err := s.ensureUnlocked(); err != nil {
 		s.mu.Unlock()
@@ -2041,7 +2103,22 @@ func (s *Service) DeleteAttachment(ctx context.Context, itemID, attachmentID str
 }
 
 // ResolveConflict resolves a sync conflict by applying the given resolution.
-func (s *Service) ResolveConflict(ctx context.Context, conflictID string, resolution coresync.ConflictResolution) error {
+func (s *Service) ResolveConflict(ctx context.Context, conflictID string, resolution coresync.ConflictResolution) (retErr error) {
+	log, started := logAppServiceStart(ctx, "conflict_resolve")
+	defer func() {
+		event := log.Info()
+		msg := "app service operation finished"
+		if retErr != nil {
+			event = log.Error().Str("error_kind", safelog.SafeErrorKind(retErr))
+			msg = "app service operation failed"
+		}
+		event.
+			Str("resolution", string(resolution)).
+			Int("count", 1).
+			Int64(zerowrap.FieldDuration, time.Since(started).Milliseconds()).
+			Msg(msg)
+	}()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -2181,7 +2258,10 @@ func (s *Service) ResolveConflict(ctx context.Context, conflictID string, resolu
 
 // replayOutbox replays outbox mutations against the remote. It must be called
 // OUTSIDE of s.mu to avoid deadlocks with Remote methods.
-func (s *Service) replayOutbox(ctx context.Context, outbox []coresync.OutboxMutation) error {
+func (s *Service) replayOutbox(ctx context.Context, outbox []coresync.OutboxMutation) (retErr error) {
+	log, started := logAppServiceStart(ctx, "outbox_replay")
+	defer func() { logAppServiceFinishCount(log, started, retErr, len(outbox)) }()
+
 	if s.deps.Remote == nil {
 		return nil
 	}
@@ -2233,6 +2313,11 @@ func (s *Service) replayOutbox(ctx context.Context, outbox []coresync.OutboxMuta
 // syncOnce performs a single sync cycle: checks remote revision, pushes local
 // mutations, pulls remote changes, and detects conflicts.
 func (s *Service) syncOnce(ctx context.Context) {
+	log, started := logAppServiceStart(ctx, "sync_once")
+	var opErr error
+	var count int
+	defer func() { logAppServiceFinishCount(log, started, opErr, count) }()
+
 	s.emit(SyncChecking, "checking remote revision")
 
 	if s.deps.Remote == nil {
@@ -2241,6 +2326,7 @@ func (s *Service) syncOnce(ctx context.Context) {
 
 	rev, err := s.deps.Remote.Revision(ctx)
 	if err != nil {
+		opErr = err
 		s.emit(SyncFailed, fmt.Sprintf("revision check failed: %v", err))
 		return
 	}
@@ -2260,9 +2346,11 @@ func (s *Service) syncOnce(ctx context.Context) {
 	// Fetch remote changes.
 	remoteItems, remoteFolders, remoteRev, err := s.deps.Remote.Sync(ctx)
 	if err != nil {
+		opErr = err
 		s.emit(SyncFailed, fmt.Sprintf("remote sync failed: %v", err))
 		return
 	}
+	count = len(remoteItems) + len(remoteFolders) + len(outboxSnapshot)
 
 	// Build remote change list for conflict detection.
 	remoteChanges := make([]coresync.RemoteChange, 0, len(remoteItems))
@@ -2279,6 +2367,7 @@ func (s *Service) syncOnce(ctx context.Context) {
 
 	// Check context cancellation before proceeding.
 	if ctx.Err() != nil {
+		opErr = ctx.Err()
 		s.mu.Unlock()
 		return
 	}
@@ -2286,6 +2375,9 @@ func (s *Service) syncOnce(ctx context.Context) {
 	// Detect conflicts.
 	conflicts := coresync.DetectConflicts(outboxSnapshot, remoteChanges)
 	if len(conflicts) > 0 {
+		log.Warn().
+			Int("count", len(conflicts)).
+			Msg("sync conflicts detected")
 		// Store pending remote state for conflict resolution.
 		s.pendingRemoteItems = make([]vault.Item, len(remoteItems))
 		copy(s.pendingRemoteItems, remoteItems)
@@ -2313,6 +2405,7 @@ func (s *Service) syncOnce(ctx context.Context) {
 	// No conflicts: replay outbox before installing remote state.
 	if len(outboxSnapshot) > 0 {
 		if err := s.replayOutbox(ctx, outboxSnapshot); err != nil {
+			opErr = err
 			s.emit(SyncFailed, fmt.Sprintf("outbox replay failed: %v", err))
 			// Do NOT clear outbox or install remote state on replay failure.
 			return
@@ -2321,10 +2414,12 @@ func (s *Service) syncOnce(ctx context.Context) {
 		// Re-fetch remote state after successful replay.
 		remoteItems, remoteFolders, remoteRev, err = s.deps.Remote.Sync(ctx)
 		if err != nil {
+			opErr = err
 			s.emit(SyncFailed, fmt.Sprintf("post-replay sync failed: %v", err))
 			// Keep outbox intact.
 			return
 		}
+		count = len(remoteItems) + len(remoteFolders) + len(outboxSnapshot)
 	}
 
 	// Install final remote state under lock.
@@ -2332,6 +2427,7 @@ func (s *Service) syncOnce(ctx context.Context) {
 	defer s.mu.Unlock()
 
 	if ctx.Err() != nil {
+		opErr = ctx.Err()
 		return
 	}
 

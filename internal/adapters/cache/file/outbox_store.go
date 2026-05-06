@@ -9,7 +9,10 @@ import (
 	"os"
 	"time"
 
+	"github.com/bnema/zerowrap"
+
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/fileutil"
+	safelog "github.com/bnema/gtk4-layershell-bitwarden/internal/core/logging"
 	coresync "github.com/bnema/gtk4-layershell-bitwarden/internal/core/sync"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/out"
 )
@@ -38,8 +41,34 @@ func (s *OutboxStore) Path() string {
 	return s.path
 }
 
+func outboxFileLog(ctx context.Context, operation string) (zerowrap.Logger, time.Time) {
+	log := zerowrap.Logger{Logger: zerowrap.FromCtx(ctx).
+		With().
+		Str(zerowrap.FieldComponent, "outbox.file").
+		Str(zerowrap.FieldOperation, operation).
+		Logger()}
+	log.Info().Msg("outbox file operation started")
+	return log, time.Now()
+}
+
+func logOutboxFileFinish(log zerowrap.Logger, started time.Time, err error, count int) {
+	event := log.Info()
+	msg := "outbox file operation finished"
+	if err != nil {
+		event = log.Error().Str("error_kind", safelog.SafeErrorKind(err))
+		msg = "outbox file operation failed"
+	}
+	event.
+		Int("count", count).
+		Int64(zerowrap.FieldDuration, time.Since(started).Milliseconds()).
+		Msg(msg)
+}
+
 // Clear removes the outbox store file. No error if the file does not exist.
-func (s *OutboxStore) Clear(ctx context.Context) error {
+func (s *OutboxStore) Clear(ctx context.Context) (retErr error) {
+	log, started := outboxFileLog(ctx, "outbox_clear")
+	defer func() { logOutboxFileFinish(log, started, retErr, 1) }()
+
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -53,7 +82,10 @@ func (s *OutboxStore) Clear(ctx context.Context) error {
 // Load reads, decrypts, and unmarshals the outbox mutations from disk.
 // Returns nil, nil if the file does not exist (absence is not an error).
 // Requires box != nil and key non-empty when the file exists.
-func (s *OutboxStore) Load(ctx context.Context, key []byte) ([]coresync.OutboxMutation, error) {
+func (s *OutboxStore) Load(ctx context.Context, key []byte) (mutations []coresync.OutboxMutation, retErr error) {
+	log, started := outboxFileLog(ctx, "outbox_load")
+	defer func() { logOutboxFileFinish(log, started, retErr, len(mutations)) }()
+
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -86,8 +118,8 @@ func (s *OutboxStore) Load(ctx context.Context, key []byte) ([]coresync.OutboxMu
 	if err != nil {
 		return nil, fmt.Errorf("outbox decrypt: %w", err)
 	}
+	defer clear(plaintext)
 
-	var mutations []coresync.OutboxMutation
 	if err := json.Unmarshal(plaintext, &mutations); err != nil {
 		return nil, fmt.Errorf("outbox decode mutations: %w", err)
 	}
@@ -98,7 +130,10 @@ func (s *OutboxStore) Load(ctx context.Context, key []byte) ([]coresync.OutboxMu
 // Save encrypts and writes the outbox mutations to disk atomically.
 // If mutations is empty, the file is removed (ignoring not-exist errors).
 // Requires box != nil and key non-empty.
-func (s *OutboxStore) Save(ctx context.Context, key []byte, mutations []coresync.OutboxMutation) error {
+func (s *OutboxStore) Save(ctx context.Context, key []byte, mutations []coresync.OutboxMutation) (retErr error) {
+	log, started := outboxFileLog(ctx, "outbox_save")
+	defer func() { logOutboxFileFinish(log, started, retErr, len(mutations)) }()
+
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -118,6 +153,7 @@ func (s *OutboxStore) Save(ctx context.Context, key []byte, mutations []coresync
 	if err != nil {
 		return fmt.Errorf("outbox marshal: %w", err)
 	}
+	defer clear(plaintext)
 
 	ciphertext, err := s.box.Seal(plaintext, key)
 	if err != nil {
