@@ -6,11 +6,25 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/bnema/zerowrap"
 	"github.com/stretchr/testify/require"
 )
+
+type safeCleanup struct {
+	once    sync.Once
+	cleanup func()
+}
+
+func newSafeCleanup(cleanup func()) *safeCleanup {
+	return &safeCleanup{cleanup: cleanup}
+}
+
+func (c *safeCleanup) Close() {
+	c.once.Do(c.cleanup)
+}
 
 func TestNewContextFromEnvDefaultsFileOnlyJSON(t *testing.T) {
 	stateHome := t.TempDir()
@@ -21,7 +35,8 @@ func TestNewContextFromEnvDefaultsFileOnlyJSON(t *testing.T) {
 	ctx, cleanup, meta, err := NewContextFromEnv(context.Background(), "test-version")
 	require.NoError(t, err)
 	require.NotNil(t, cleanup)
-	defer cleanup()
+	logCleanup := newSafeCleanup(cleanup)
+	defer logCleanup.Close()
 
 	expectedPath := filepath.Join(stateHome, AppName, "logs", AppName+".log")
 	require.Equal(t, LogMeta{
@@ -36,7 +51,7 @@ func TestNewContextFromEnvDefaultsFileOnlyJSON(t *testing.T) {
 
 	log := zerowrap.FromCtx(ctx)
 	log.Info().Str("test_case", "defaults").Msg("default log event")
-	cleanup()
+	logCleanup.Close()
 
 	entry := readSingleJSONLogEntry(t, meta.Path)
 	require.Equal(t, "info", entry["level"])
@@ -56,13 +71,14 @@ func TestNewContextFromEnvExplicitPathCreatesParentDirectories(t *testing.T) {
 
 	ctx, cleanup, meta, err := NewContextFromEnv(context.Background(), "")
 	require.NoError(t, err)
-	defer cleanup()
+	logCleanup := newSafeCleanup(cleanup)
+	defer logCleanup.Close()
 	require.Equal(t, explicitPath, meta.Path)
 	require.DirExists(t, filepath.Dir(explicitPath))
 
 	log := zerowrap.FromCtx(ctx)
 	log.Info().Msg("explicit path event")
-	cleanup()
+	logCleanup.Close()
 
 	data, err := os.ReadFile(explicitPath)
 	require.NoError(t, err)
@@ -78,12 +94,13 @@ func TestNewContextFromEnvConsoleMirrorWritesToStderr(t *testing.T) {
 
 	ctx, cleanup, meta, err := NewContextFromEnv(context.Background(), "")
 	require.NoError(t, err)
-	defer cleanup()
+	logCleanup := newSafeCleanup(cleanup)
+	defer logCleanup.Close()
 	require.True(t, meta.Console)
 
 	log := zerowrap.FromCtx(ctx)
 	log.Info().Str("test_case", "console_mirror").Msg("console mirror event")
-	cleanup()
+	logCleanup.Close()
 
 	stderrBytes, err := os.ReadFile(stderrPath)
 	require.NoError(t, err)
@@ -157,12 +174,13 @@ func TestNewContextFromEnvAcceptsConsoleFileFormat(t *testing.T) {
 
 	ctx, cleanup, meta, err := NewContextFromEnv(context.Background(), "")
 	require.NoError(t, err)
-	defer cleanup()
+	logCleanup := newSafeCleanup(cleanup)
+	defer logCleanup.Close()
 	require.Equal(t, LogFileFormatConsole, meta.FileFormat)
 
 	log := zerowrap.FromCtx(ctx)
 	log.Info().Msg("console file format event")
-	cleanup()
+	logCleanup.Close()
 
 	data, err := os.ReadFile(explicitPath)
 	require.NoError(t, err)

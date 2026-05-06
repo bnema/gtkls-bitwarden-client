@@ -132,8 +132,8 @@ func keyringLog(ctx context.Context, operation string) zerowrap.Logger {
 }
 
 func logKeyringStart(ctx context.Context, operation string) (zerowrap.Logger, time.Time) {
-	log := keyringLog(ctx, operation)
 	started := time.Now()
+	log := keyringLog(ctx, operation)
 	log.Info().Msg("keyring operation started")
 	return log, started
 }
@@ -149,13 +149,14 @@ func logKeyringFinish(log zerowrap.Logger, started time.Time, err error) {
 }
 
 func logKeyringAvailability(log zerowrap.Logger, started time.Time, err error) {
-	event := log.Info().Bool("available", err == nil)
+	available := err == nil
+	event := log.Info()
 	msg := "keyring availability checked"
 	if err != nil {
-		event = log.Error().Bool("available", false).Str("error_kind", safelog.SafeErrorKind(err))
+		event = log.Error().Str("error_kind", safelog.SafeErrorKind(err))
 		msg = "keyring unavailable"
 	}
-	event.Dur(zerowrap.FieldDuration, time.Since(started)).Msg(msg)
+	event.Bool("available", available).Dur(zerowrap.FieldDuration, time.Since(started)).Msg(msg)
 }
 
 // ---------------------------------------------------------------------------

@@ -72,6 +72,7 @@ func TestRootCommandLifecycleLogsUseContext(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
+	require.NoError(t, os.WriteFile(path, []byte("[bitwarden]\nemail = 'test@example.com'\n"), 0o600))
 
 	composeCalled := false
 	overlayCalled := false

@@ -88,9 +88,10 @@ func remoteLog(ctx context.Context, operation string) zerowrap.Logger {
 }
 
 func logRemoteStart(ctx context.Context, operation string) (zerowrap.Logger, time.Time) {
+	started := time.Now()
 	log := remoteLog(ctx, operation)
 	log.Info().Msg("remote operation started")
-	return log, time.Now()
+	return log, started
 }
 
 func logRemoteFinish(log zerowrap.Logger, started time.Time, err error) {
@@ -100,7 +101,7 @@ func logRemoteFinish(log zerowrap.Logger, started time.Time, err error) {
 		event = log.Error().Str("error_kind", safelog.SafeErrorKind(err))
 		msg = "remote operation failed"
 	}
-	event.Int64(zerowrap.FieldDuration, time.Since(started).Milliseconds()).Msg(msg)
+	event.Dur(zerowrap.FieldDuration, time.Since(started)).Msg(msg)
 }
 
 func logRemoteFinishCounts(log zerowrap.Logger, started time.Time, err error, itemCount, folderCount int) {
@@ -113,7 +114,7 @@ func logRemoteFinishCounts(log zerowrap.Logger, started time.Time, err error, it
 	event.
 		Int("item_count", itemCount).
 		Int("folder_count", folderCount).
-		Int64(zerowrap.FieldDuration, time.Since(started).Milliseconds()).
+		Dur(zerowrap.FieldDuration, time.Since(started)).
 		Msg(msg)
 }
 

@@ -89,6 +89,11 @@ func logAppServiceFinishCount(log zerowrap.Logger, started time.Time, err error,
 		Msg(msg)
 }
 
+func logRemoteSuccessLocalLocked(ctx context.Context, operation string) {
+	log := appServiceLog(ctx, operation)
+	log.Warn().Msg("remote operation succeeded but service locked before local update")
+}
+
 // NewService creates a new Service with the given dependencies.
 func NewService(deps Deps) *Service {
 	cfg := deps.Config
@@ -1767,10 +1772,7 @@ func (s *Service) Create(ctx context.Context, item vault.Item) (retItem vault.It
 			s.mu.Lock()
 			if err := s.ensureUnlocked(); err != nil {
 				s.mu.Unlock()
-				log := zerowrap.FromCtx(ctx).WithField(zerowrap.FieldComponent, "app.service")
-				log.Warn().
-					Str(zerowrap.FieldOperation, "remote_create_local_update").
-					Msg("remote create succeeded but service locked before local update")
+				logRemoteSuccessLocalLocked(ctx, "remote_create_local_update")
 				return vault.Item{}, err
 			}
 			remoteItem.SyncStatus = vault.SyncStatusSynced
@@ -1833,10 +1835,7 @@ func (s *Service) Update(ctx context.Context, id string, item vault.Item) (retIt
 			s.mu.Lock()
 			if err := s.ensureUnlocked(); err != nil {
 				s.mu.Unlock()
-				log := zerowrap.FromCtx(ctx).WithField(zerowrap.FieldComponent, "app.service")
-				log.Warn().
-					Str(zerowrap.FieldOperation, "remote_update_local_update").
-					Msg("remote update succeeded but service locked before local update")
+				logRemoteSuccessLocalLocked(ctx, "remote_update_local_update")
 				return vault.Item{}, err
 			}
 			remoteItem.SyncStatus = vault.SyncStatusSynced
@@ -1909,10 +1908,7 @@ func (s *Service) Trash(ctx context.Context, id string) (retErr error) {
 			s.mu.Lock()
 			if err := s.ensureUnlocked(); err != nil {
 				s.mu.Unlock()
-				log := zerowrap.FromCtx(ctx).WithField(zerowrap.FieldComponent, "app.service")
-				log.Warn().
-					Str(zerowrap.FieldOperation, "remote_trash_local_update").
-					Msg("remote trash succeeded but service locked before local update")
+				logRemoteSuccessLocalLocked(ctx, "remote_trash_local_update")
 				return err
 			}
 			for i, existing := range s.items {
@@ -1978,10 +1974,7 @@ func (s *Service) Restore(ctx context.Context, id string) (retItem vault.Item, r
 			s.mu.Lock()
 			if err := s.ensureUnlocked(); err != nil {
 				s.mu.Unlock()
-				log := zerowrap.FromCtx(ctx).WithField(zerowrap.FieldComponent, "app.service")
-				log.Warn().
-					Str(zerowrap.FieldOperation, "remote_restore_local_update").
-					Msg("remote restore succeeded but service locked before local update")
+				logRemoteSuccessLocalLocked(ctx, "remote_restore_local_update")
 				return vault.Item{}, err
 			}
 			remoteItem.Deleted = false
@@ -2050,10 +2043,7 @@ func (s *Service) Delete(ctx context.Context, id string) (retErr error) {
 			s.mu.Lock()
 			if err := s.ensureUnlocked(); err != nil {
 				s.mu.Unlock()
-				log := zerowrap.FromCtx(ctx).WithField(zerowrap.FieldComponent, "app.service")
-				log.Warn().
-					Str(zerowrap.FieldOperation, "remote_delete_local_update").
-					Msg("remote delete succeeded but service locked before local update")
+				logRemoteSuccessLocalLocked(ctx, "remote_delete_local_update")
 				return err
 			}
 			for i, existing := range s.items {

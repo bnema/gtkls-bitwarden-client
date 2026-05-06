@@ -18,6 +18,8 @@ var sensitiveKeyWords = []string{
 	"key",
 	"auth",
 	"ciphertext",
+	// Intentionally broad: this app handles 2FA/recovery codes, so generic
+	// code fields are redacted even though status_code/error_code would be safe.
 	"code",
 	"2fa",
 	"session",
