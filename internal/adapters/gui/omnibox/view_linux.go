@@ -275,6 +275,7 @@ func (v *View) buildUI() {
 	searchPlaceholder := "Search vault…"
 	v.searchEntry = gtklib.NewEntry()
 	v.searchEntry.SetPlaceholderText(&searchPlaceholder)
+	v.searchEntry.GetStyleContext().AddClass("glsbw-search")
 	v.searchBox.Append(&v.searchEntry.Widget)
 
 	// Rows container
@@ -287,7 +288,9 @@ func (v *View) buildUI() {
 	// Status label
 	statusText := ""
 	v.statusLabel = gtklib.NewLabel(&statusText)
+	v.statusLabel.GetStyleContext().AddClass("glsbw-status")
 	v.statusBox = gtklib.NewBox(gtklib.OrientationHorizontalValue, 0)
+	v.statusBox.GetStyleContext().AddClass("glsbw-footer")
 	v.statusBox.Append(&v.statusLabel.Widget)
 	v.searchBox.Append(&v.statusBox.Widget)
 
@@ -1093,25 +1096,28 @@ func (v *View) renderRows() {
 // buildRowWidget creates a single row widget.
 func (v *View) buildRowWidget(row Row, selected bool) *gtklib.Box {
 	hbox := gtklib.NewBox(gtklib.OrientationHorizontalValue, 4)
+	hbox.GetStyleContext().AddClass("glsbw-row")
 
 	title := row.Title
 	if subtitle := row.Subtitle; subtitle != "" {
 		title = title + " — " + subtitle
 	}
 	label := gtklib.NewLabel(&title)
+	label.GetStyleContext().AddClass("glsbw-title")
 	label.SetHalign(gtklib.AlignStartValue)
 	label.SetXalign(0)
 	hbox.Append(&label.Widget)
 
 	if row.Badge != "" {
 		badge := gtklib.NewLabel(&row.Badge)
+		badge.GetStyleContext().AddClass("glsbw-badge")
 		badge.SetHalign(gtklib.AlignEndValue)
 		hbox.Append(&badge.Widget)
 	}
 
 	if selected {
 		styleCtx := hbox.GetStyleContext()
-		styleCtx.AddClass("glsbw-selected")
+		styleCtx.AddClass("selected")
 	}
 
 	return hbox

@@ -31,38 +31,61 @@ func BuildCSS(p coretheme.Palette, scale float64) string {
   --glsbw-status-conflict: %s;
   --glsbw-status-danger: %s;
 
-  --glsbw-row-height: calc(var(--glsbw-scale) * 3em);
-  --glsbw-window-width: calc(var(--glsbw-scale) * 20em);
-  --glsbw-padding: calc(var(--glsbw-scale) * 0.5em);
-  --glsbw-radius: calc(var(--glsbw-scale) * 0.25em);
+  --glsbw-row-height: calc(var(--glsbw-scale) * 3.25em);
+  --glsbw-window-width: calc(var(--glsbw-scale) * 37em);
+  --glsbw-padding: calc(var(--glsbw-scale) * 0.65em);
+  --glsbw-radius: calc(var(--glsbw-scale) * 0.65em);
+}
+
+window {
+  background-color: transparent;
+}
+
+* {
+  outline-style: none;
+  outline-width: 0;
+  outline-color: transparent;
 }
 
 .glsbw-window {
-  background-color: var(--glsbw-bg);
+  background-color: transparent;
   color: var(--glsbw-fg);
-  width: var(--glsbw-window-width);
-  padding: var(--glsbw-padding);
 }
 
 .glsbw-omnibox {
-  background-color: var(--glsbw-row-hover);
+  background-color: var(--glsbw-bg);
+  border: 1px solid var(--glsbw-row-hover);
   border-radius: var(--glsbw-radius);
-  padding: var(--glsbw-padding);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.50), 0 0 16px rgba(245, 158, 11, 0.08);
+  color: var(--glsbw-fg);
+  min-width: var(--glsbw-window-width);
+  max-width: var(--glsbw-window-width);
+  padding: 0;
 }
 
 .glsbw-search {
-  background-color: var(--glsbw-row-hover);
-  border: 1px solid var(--glsbw-accent);
-  border-radius: var(--glsbw-radius);
+  background-color: transparent;
+  border: none;
+  border-bottom: 1px solid var(--glsbw-row-hover);
+  border-radius: 0;
+  box-shadow: none;
   color: var(--glsbw-fg);
+  font-size: 1rem;
+  padding: calc(var(--glsbw-scale) * 0.75em) calc(var(--glsbw-scale) * 1em);
+}
+
+.glsbw-search:focus, .glsbw-search:focus-within {
+  border: none;
+  border-bottom: 1px solid var(--glsbw-accent);
+  box-shadow: none;
 }
 
 entry, passwordentry, searchentry, textview {
-  background-color: var(--glsbw-bg);
+  background-color: #0a140f;
   color: var(--glsbw-fg);
   border: 1px solid var(--glsbw-row-hover);
-  border-radius: var(--glsbw-radius);
-  padding: calc(var(--glsbw-scale) * 0.25em) calc(var(--glsbw-scale) * 0.5em);
+  border-radius: calc(var(--glsbw-scale) * 0.40em);
+  padding: calc(var(--glsbw-scale) * 0.35em) calc(var(--glsbw-scale) * 0.65em);
 }
 
 entry:focus, entry:focus-within,
@@ -70,17 +93,18 @@ passwordentry:focus, passwordentry:focus-within,
 searchentry:focus, searchentry:focus-within,
 textview:focus, textview:focus-within {
   border-color: var(--glsbw-accent);
-  box-shadow: 0 0 0 1px var(--glsbw-accent);
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.30);
 }
 
 .glsbw-row {
-  height: var(--glsbw-row-height);
-  padding: var(--glsbw-padding);
-  border-radius: var(--glsbw-radius);
+  min-height: var(--glsbw-row-height);
+  padding: calc(var(--glsbw-scale) * 0.50em) calc(var(--glsbw-scale) * 1em);
+  border-radius: 0;
+  background-color: transparent;
 }
 
 .glsbw-row:hover {
-  background-color: var(--glsbw-row-hover);
+  background-color: rgba(245, 158, 11, 0.06);
 }
 
 .glsbw-row:selected,
@@ -89,7 +113,7 @@ textview:focus, textview:focus-within {
 }
 
 .glsbw-title {
-  font-weight: bold;
+  font-weight: 500;
   color: var(--glsbw-fg);
 }
 
@@ -99,14 +123,23 @@ textview:focus, textview:focus-within {
   opacity: 0.75;
 }
 
+.glsbw-badge {
+  color: var(--glsbw-status-ok);
+  font-size: 0.78em;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .glsbw-empty {
-  color: var(--glsbw-fg);
-  opacity: 0.65;
+  color: var(--glsbw-status-ok);
+  opacity: 0.75;
   padding: calc(var(--glsbw-scale) * 1.5em) var(--glsbw-padding);
 }
 
 .glsbw-status {
   color: var(--glsbw-status-ok);
+  font-size: 0.82em;
 }
 
 .glsbw-conflict {
@@ -119,7 +152,7 @@ textview:focus, textview:focus-within {
 
 .glsbw-footer {
   border-top: 1px solid var(--glsbw-row-hover);
-  padding: var(--glsbw-padding);
+  padding: calc(var(--glsbw-scale) * 0.45em) calc(var(--glsbw-scale) * 1em);
 }
 `, scale,
 		p.Bg, p.Fg, p.Accent, p.AccentFg,

@@ -6,15 +6,15 @@ import (
 
 func TestDefaultAccent(t *testing.T) {
 	p := DefaultDarkPalette()
-	if p.Accent != "#175ddc" {
-		t.Errorf("expected accent #175ddc, got %s", p.Accent)
+	if p.Accent != "#f59e0b" {
+		t.Errorf("expected accent #f59e0b, got %s", p.Accent)
 	}
 }
 
 func TestDefaultBg(t *testing.T) {
 	p := DefaultDarkPalette()
-	if p.Bg != "#1a1a1a" {
-		t.Errorf("expected bg #1a1a1a, got %s", p.Bg)
+	if p.Bg != "#0f1a16" {
+		t.Errorf("expected bg #0f1a16, got %s", p.Bg)
 	}
 }
 
@@ -27,8 +27,8 @@ func TestApplyOverrideAccent(t *testing.T) {
 		t.Errorf("expected accent #ff0000, got %s", result.Accent)
 	}
 	// Other fields should remain unchanged
-	if result.Bg != "#1a1a1a" {
-		t.Errorf("expected bg unchanged #1a1a1a, got %s", result.Bg)
+	if result.Bg != "#0f1a16" {
+		t.Errorf("expected bg unchanged #0f1a16, got %s", result.Bg)
 	}
 }
 
@@ -37,8 +37,8 @@ func TestApplyOverrideEmptyValue(t *testing.T) {
 	overrides := map[string]string{"accent": ""}
 	result := ApplyOverrides(p, overrides)
 
-	if result.Accent != "#175ddc" {
-		t.Errorf("expected accent unchanged #175ddc for empty override, got %s", result.Accent)
+	if result.Accent != "#f59e0b" {
+		t.Errorf("expected accent unchanged #f59e0b for empty override, got %s", result.Accent)
 	}
 }
 
@@ -97,7 +97,7 @@ func TestApplyOverrideAllFields(t *testing.T) {
 func TestApplyOverrideNoOverrides(t *testing.T) {
 	p := DefaultDarkPalette()
 	result := ApplyOverrides(p, nil)
-	if result.Accent != "#175ddc" {
+	if result.Accent != "#f59e0b" {
 		t.Errorf("expected accent unchanged with nil overrides, got %s", result.Accent)
 	}
 }
@@ -105,7 +105,7 @@ func TestApplyOverrideNoOverrides(t *testing.T) {
 func TestPaletteMap(t *testing.T) {
 	p := DefaultDarkPalette()
 	m := p.Map()
-	if m["accent"] != "#175ddc" {
+	if m["accent"] != "#f59e0b" {
 		t.Errorf("expected accent in map, got %s", m["accent"])
 	}
 	if len(m) != 11 {
@@ -115,7 +115,7 @@ func TestPaletteMap(t *testing.T) {
 
 func TestPaletteFieldValue(t *testing.T) {
 	p := DefaultDarkPalette()
-	if p.FieldValue("accent") != "#175ddc" {
+	if p.FieldValue("accent") != "#f59e0b" {
 		t.Errorf("FieldValue accent = %s", p.FieldValue("accent"))
 	}
 	if p.FieldValue("nonexistent") != "" {

@@ -16,20 +16,20 @@ type Palette struct {
 	StatusDanger   string
 }
 
-// DefaultDarkPalette returns a Bitwarden-inspired dark palette.
+// DefaultDarkPalette returns the default dark emerald/amber overlay palette.
 func DefaultDarkPalette() Palette {
 	return Palette{
-		Bg:             "#1a1a1a",
-		Fg:             "#ffffff",
-		Accent:         "#175ddc",
-		AccentFg:       "#ffffff",
-		RowHover:       "#2a2a2a",
-		RowSelected:    "#333333",
-		StatusOK:       "#00a862",
-		StatusPending:  "#ffa000",
-		StatusWarning:  "#ff8c00",
-		StatusConflict: "#d32f2f",
-		StatusDanger:   "#b71c1c",
+		Bg:             "#0f1a16",
+		Fg:             "#c8e8d8",
+		Accent:         "#f59e0b",
+		AccentFg:       "#0f1a16",
+		RowHover:       "#1a3028",
+		RowSelected:    "rgba(245, 158, 11, 0.10)",
+		StatusOK:       "#4a7a66",
+		StatusPending:  "#f59e0b",
+		StatusWarning:  "#d97706",
+		StatusConflict: "#f59e0b",
+		StatusDanger:   "#E5484D",
 	}
 }
 

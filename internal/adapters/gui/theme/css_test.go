@@ -16,8 +16,8 @@ func TestBuildCSS_DefaultDarkPalette_Scale1_2(t *testing.T) {
 	if !strings.Contains(css, "em") {
 		t.Errorf("expected em unit in CSS")
 	}
-	if !strings.Contains(css, "#175ddc") {
-		t.Errorf("expected #175ddc accent in CSS")
+	if !strings.Contains(css, "#f59e0b") {
+		t.Errorf("expected #f59e0b accent in CSS")
 	}
 	if !strings.Contains(css, ".glsbw-window") {
 		t.Errorf("expected .glsbw-window selector")
@@ -36,6 +36,9 @@ func TestBuildCSS_DefaultDarkPalette_Scale1_2(t *testing.T) {
 	}
 	if !strings.Contains(css, ".glsbw-title") {
 		t.Errorf("expected .glsbw-title selector")
+	}
+	if !strings.Contains(css, ".glsbw-badge") {
+		t.Errorf("expected .glsbw-badge selector")
 	}
 	if !strings.Contains(css, ".glsbw-subtitle") {
 		t.Errorf("expected .glsbw-subtitle selector")
@@ -83,8 +86,8 @@ func TestBuildCSS_DarkInputsUsePaletteColors(t *testing.T) {
 	if !strings.Contains(css, "entry, passwordentry, searchentry, textview") {
 		t.Fatalf("expected input styling selector in CSS")
 	}
-	if !strings.Contains(css, "background-color: var(--glsbw-bg)") {
-		t.Fatalf("expected inputs to use dark background variable")
+	if !strings.Contains(css, "background-color: #0a140f") {
+		t.Fatalf("expected inputs to use sekeve-style dark background")
 	}
 	if !strings.Contains(css, p.Bg) || !strings.Contains(css, p.Fg) {
 		t.Fatalf("expected palette colors in CSS")
