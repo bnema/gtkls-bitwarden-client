@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/bnema/zerowrap"
 	zaladokeyring "github.com/zalando/go-keyring"
@@ -130,30 +131,31 @@ func keyringLog(ctx context.Context, operation string) zerowrap.Logger {
 		Logger()}
 }
 
-func logKeyringStart(ctx context.Context, operation string) zerowrap.Logger {
+func logKeyringStart(ctx context.Context, operation string) (zerowrap.Logger, time.Time) {
 	log := keyringLog(ctx, operation)
+	started := time.Now()
 	log.Info().Msg("keyring operation started")
-	return log
+	return log, started
 }
 
-func logKeyringFinish(log zerowrap.Logger, err error) {
+func logKeyringFinish(log zerowrap.Logger, started time.Time, err error) {
 	event := log.Info()
 	msg := "keyring operation finished"
 	if err != nil {
 		event = log.Error().Str("error_kind", safelog.SafeErrorKind(err))
 		msg = "keyring operation failed"
 	}
-	event.Msg(msg)
+	event.Dur(zerowrap.FieldDuration, time.Since(started)).Msg(msg)
 }
 
-func logKeyringAvailability(log zerowrap.Logger, err error) {
+func logKeyringAvailability(log zerowrap.Logger, started time.Time, err error) {
 	event := log.Info().Bool("available", err == nil)
 	msg := "keyring availability checked"
 	if err != nil {
 		event = log.Error().Bool("available", false).Str("error_kind", safelog.SafeErrorKind(err))
 		msg = "keyring unavailable"
 	}
-	event.Msg(msg)
+	event.Dur(zerowrap.FieldDuration, time.Since(started)).Msg(msg)
 }
 
 // ---------------------------------------------------------------------------
@@ -163,8 +165,8 @@ func logKeyringAvailability(log zerowrap.Logger, err error) {
 // CheckAvailable verifies that the OS secret service is reachable by
 // setting, reading, and deleting a probe value.
 func (s *Store) CheckAvailable(ctx context.Context) (retErr error) {
-	log := logKeyringStart(ctx, "check_available")
-	defer func() { logKeyringAvailability(log, retErr) }()
+	log, started := logKeyringStart(ctx, "check_available")
+	defer func() { logKeyringAvailability(log, started, retErr) }()
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -193,8 +195,8 @@ func (s *Store) CheckAvailable(ctx context.Context) (retErr error) {
 }
 
 func (s *Store) SaveTokenBundle(ctx context.Context, ref session.AccountRef, bundle session.TokenBundle) (retErr error) {
-	log := logKeyringStart(ctx, "save_token_bundle")
-	defer func() { logKeyringFinish(log, retErr) }()
+	log, started := logKeyringStart(ctx, "save_token_bundle")
+	defer func() { logKeyringFinish(log, started, retErr) }()
 
 	if err := checkContext(ctx); err != nil {
 		return err
@@ -216,8 +218,8 @@ func (s *Store) SaveTokenBundle(ctx context.Context, ref session.AccountRef, bun
 }
 
 func (s *Store) LoadTokenBundle(ctx context.Context, ref session.AccountRef) (bundleResult session.TokenBundle, retErr error) {
-	log := logKeyringStart(ctx, "load_token_bundle")
-	defer func() { logKeyringFinish(log, retErr) }()
+	log, started := logKeyringStart(ctx, "load_token_bundle")
+	defer func() { logKeyringFinish(log, started, retErr) }()
 
 	if err := checkContext(ctx); err != nil {
 		return session.TokenBundle{}, err
@@ -264,8 +266,8 @@ func (s *Store) LoadTokenBundle(ctx context.Context, ref session.AccountRef) (bu
 }
 
 func (s *Store) DeleteTokenBundle(ctx context.Context, ref session.AccountRef) (retErr error) {
-	log := logKeyringStart(ctx, "delete_token_bundle")
-	defer func() { logKeyringFinish(log, retErr) }()
+	log, started := logKeyringStart(ctx, "delete_token_bundle")
+	defer func() { logKeyringFinish(log, started, retErr) }()
 
 	if err := checkContext(ctx); err != nil {
 		return err
@@ -280,8 +282,8 @@ func (s *Store) DeleteTokenBundle(ctx context.Context, ref session.AccountRef) (
 }
 
 func (s *Store) SaveUnlockEnvelope(ctx context.Context, ref session.AccountRef, envelope session.UnlockEnvelope) (retErr error) {
-	log := logKeyringStart(ctx, "save_unlock_envelope")
-	defer func() { logKeyringFinish(log, retErr) }()
+	log, started := logKeyringStart(ctx, "save_unlock_envelope")
+	defer func() { logKeyringFinish(log, started, retErr) }()
 
 	if err := checkContext(ctx); err != nil {
 		return err
@@ -303,8 +305,8 @@ func (s *Store) SaveUnlockEnvelope(ctx context.Context, ref session.AccountRef, 
 }
 
 func (s *Store) LoadUnlockEnvelope(ctx context.Context, ref session.AccountRef) (envelopeResult session.UnlockEnvelope, retErr error) {
-	log := logKeyringStart(ctx, "load_unlock_envelope")
-	defer func() { logKeyringFinish(log, retErr) }()
+	log, started := logKeyringStart(ctx, "load_unlock_envelope")
+	defer func() { logKeyringFinish(log, started, retErr) }()
 
 	if err := checkContext(ctx); err != nil {
 		return session.UnlockEnvelope{}, err
@@ -325,8 +327,8 @@ func (s *Store) LoadUnlockEnvelope(ctx context.Context, ref session.AccountRef) 
 }
 
 func (s *Store) DeleteUnlockEnvelope(ctx context.Context, ref session.AccountRef) (retErr error) {
-	log := logKeyringStart(ctx, "delete_unlock_envelope")
-	defer func() { logKeyringFinish(log, retErr) }()
+	log, started := logKeyringStart(ctx, "delete_unlock_envelope")
+	defer func() { logKeyringFinish(log, started, retErr) }()
 
 	if err := checkContext(ctx); err != nil {
 		return err
@@ -341,8 +343,8 @@ func (s *Store) DeleteUnlockEnvelope(ctx context.Context, ref session.AccountRef
 }
 
 func (s *Store) SavePINProfile(ctx context.Context, ref session.AccountRef, profile session.PINProfile) (retErr error) {
-	log := logKeyringStart(ctx, "save_pin_profile")
-	defer func() { logKeyringFinish(log, retErr) }()
+	log, started := logKeyringStart(ctx, "save_pin_profile")
+	defer func() { logKeyringFinish(log, started, retErr) }()
 
 	if err := checkContext(ctx); err != nil {
 		return err
@@ -372,8 +374,8 @@ func (s *Store) SavePINProfile(ctx context.Context, ref session.AccountRef, prof
 }
 
 func (s *Store) LoadPINProfile(ctx context.Context, ref session.AccountRef) (profileResult session.PINProfile, retErr error) {
-	log := logKeyringStart(ctx, "load_pin_profile")
-	defer func() { logKeyringFinish(log, retErr) }()
+	log, started := logKeyringStart(ctx, "load_pin_profile")
+	defer func() { logKeyringFinish(log, started, retErr) }()
 
 	if err := checkContext(ctx); err != nil {
 		return session.PINProfile{}, err
@@ -403,8 +405,8 @@ func (s *Store) LoadPINProfile(ctx context.Context, ref session.AccountRef) (pro
 }
 
 func (s *Store) DeletePINProfile(ctx context.Context, ref session.AccountRef) (retErr error) {
-	log := logKeyringStart(ctx, "delete_pin_profile")
-	defer func() { logKeyringFinish(log, retErr) }()
+	log, started := logKeyringStart(ctx, "delete_pin_profile")
+	defer func() { logKeyringFinish(log, started, retErr) }()
 
 	if err := checkContext(ctx); err != nil {
 		return err

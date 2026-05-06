@@ -928,6 +928,11 @@ func (s *Service) loadCacheData(ctx context.Context, password string) (items []v
 	if err := json.Unmarshal(plaintext, &plain); err != nil {
 		return nil, nil, nil, nil, nil, false, fmt.Errorf("cache decode: %w", err)
 	}
+	defer func() {
+		clear(plain.ItemsJSON)
+		clear(plain.FoldersJSON)
+		clear(plain.OutboxJSON)
+	}()
 
 	if err := json.Unmarshal(plain.ItemsJSON, &items); err != nil {
 		return nil, nil, nil, nil, nil, false, fmt.Errorf("cache items decode: %w", err)
@@ -1018,6 +1023,11 @@ func (s *Service) loadCachedVaultWithKey(ctx context.Context, key []byte) (items
 	if err := json.Unmarshal(plaintext, &plain); err != nil {
 		return nil, nil, nil, fmt.Errorf("cache decode: %w", err)
 	}
+	defer func() {
+		clear(plain.ItemsJSON)
+		clear(plain.FoldersJSON)
+		clear(plain.OutboxJSON)
+	}()
 
 	if err := json.Unmarshal(plain.ItemsJSON, &items); err != nil {
 		return nil, nil, nil, fmt.Errorf("cache items decode: %w", err)
@@ -1032,11 +1042,6 @@ func (s *Service) loadCachedVaultWithKey(ctx context.Context, key []byte) (items
 			return nil, nil, nil, fmt.Errorf("cache outbox decode: %w", err)
 		}
 	}
-
-	// Zero plain JSON fields after decode.
-	clear(plain.ItemsJSON)
-	clear(plain.FoldersJSON)
-	clear(plain.OutboxJSON)
 
 	return items, folders, outbox, nil
 }
@@ -1243,7 +1248,10 @@ func (s *Service) Events() <-chan Event {
 // UpdateConfig replaces the current configuration with a validated copy.
 // The only validation error tolerated is ErrEmailRequired (matching Load
 // semantics), allowing first-run or hot-reload scenarios without email.
-func (s *Service) UpdateConfig(ctx context.Context, cfg *config.Config) error {
+func (s *Service) UpdateConfig(ctx context.Context, cfg *config.Config) (retErr error) {
+	log, started := logAppServiceStart(ctx, "update_config")
+	defer func() { logAppServiceFinish(log, started, retErr) }()
+
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -1279,7 +1287,10 @@ func (s *Service) UpdateConfig(ctx context.Context, cfg *config.Config) error {
 }
 
 // Shutdown gracefully shuts down the service.
-func (s *Service) Shutdown(ctx context.Context) error {
+func (s *Service) Shutdown(ctx context.Context) (retErr error) {
+	log, started := logAppServiceStart(ctx, "shutdown")
+	defer func() { logAppServiceFinish(log, started, retErr) }()
+
 	s.mu.Lock()
 	if s.cancelWorkers != nil {
 		s.cancelWorkers()
@@ -2083,22 +2094,34 @@ func (s *Service) Delete(ctx context.Context, id string) (retErr error) {
 }
 
 // ListAttachments is not yet supported.
-func (s *Service) ListAttachments(ctx context.Context, itemID string) ([]vault.Attachment, error) {
+func (s *Service) ListAttachments(ctx context.Context, itemID string) (attachments []vault.Attachment, retErr error) {
+	log, started := logAppServiceStart(ctx, "attachment_list")
+	defer func() { logAppServiceFinish(log, started, retErr) }()
+
 	return nil, cerrors.ErrUnsupported
 }
 
 // DownloadAttachment is not yet supported.
-func (s *Service) DownloadAttachment(ctx context.Context, itemID, attachmentID string, dst io.Writer) error {
+func (s *Service) DownloadAttachment(ctx context.Context, itemID, attachmentID string, dst io.Writer) (retErr error) {
+	log, started := logAppServiceStart(ctx, "attachment_download")
+	defer func() { logAppServiceFinish(log, started, retErr) }()
+
 	return cerrors.ErrUnsupported
 }
 
 // UploadAttachment is not yet supported.
-func (s *Service) UploadAttachment(ctx context.Context, itemID, fileName string, size int64, src io.Reader) (vault.Attachment, error) {
+func (s *Service) UploadAttachment(ctx context.Context, itemID, fileName string, size int64, src io.Reader) (attachment vault.Attachment, retErr error) {
+	log, started := logAppServiceStart(ctx, "attachment_upload")
+	defer func() { logAppServiceFinish(log, started, retErr) }()
+
 	return vault.Attachment{}, cerrors.ErrUnsupported
 }
 
 // DeleteAttachment is not yet supported.
-func (s *Service) DeleteAttachment(ctx context.Context, itemID, attachmentID string) error {
+func (s *Service) DeleteAttachment(ctx context.Context, itemID, attachmentID string) (retErr error) {
+	log, started := logAppServiceStart(ctx, "attachment_delete")
+	defer func() { logAppServiceFinish(log, started, retErr) }()
+
 	return cerrors.ErrUnsupported
 }
 
