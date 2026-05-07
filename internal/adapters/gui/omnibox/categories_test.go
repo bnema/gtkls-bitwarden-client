@@ -52,3 +52,11 @@ func TestCategoryShortcutForMode_FormMatchesVisibleAddTabs(t *testing.T) {
 		})
 	}
 }
+
+func TestCategoryShortcutForMode_GeneratorHasNoShortcuts(t *testing.T) {
+	for i := 1; i <= 5; i++ {
+		got, ok := categoryShortcutForMode(ModeGenerator, i)
+		require.False(t, ok)
+		require.Equal(t, itemCategory(0), got)
+	}
+}

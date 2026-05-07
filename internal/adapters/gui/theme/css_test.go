@@ -46,6 +46,9 @@ func TestBuildCSS_DefaultDarkPalette_Scale1_2(t *testing.T) {
 	if !strings.Contains(css, "entry, passwordentry, searchentry, textview") {
 		t.Errorf("expected dark input selectors")
 	}
+	if !strings.Contains(css, "spinbutton.glsbw-spin") {
+		t.Errorf("expected themed spinbutton selector")
+	}
 	if !strings.Contains(css, ".glsbw-title") {
 		t.Errorf("expected .glsbw-title selector")
 	}
@@ -121,6 +124,9 @@ func TestBuildCSS_DarkInputsUsePaletteColors(t *testing.T) {
 
 	if !strings.Contains(css, "entry, passwordentry, searchentry, textview") {
 		t.Fatalf("expected input styling selector in CSS")
+	}
+	if !strings.Contains(css, "spinbutton.glsbw-spin text") {
+		t.Fatalf("expected spinbutton text styling selector in CSS")
 	}
 	if !strings.Contains(css, "--glsbw-bg-input:") {
 		t.Fatalf("expected input background variable in CSS")

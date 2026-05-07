@@ -16,6 +16,7 @@ const (
 	ModeSearch
 	ModeDetail
 	ModeForm
+	ModeGenerator
 	ModePINSetup
 	ModePINConfirm
 	ModeTwoFactor
@@ -122,7 +123,7 @@ func (s *State) OpenDetail() {
 }
 
 // Back transitions to the previous logical mode based on current mode.
-// ModeDetail/Form → ModeSearch. ModePINConfirm → ModePINSetup.
+// ModeDetail/Form/Generator → ModeSearch. ModePINConfirm → ModePINSetup.
 // ModePINSetup → ModeUnlock. ModeTwoFactor → ModeUnlock.
 // From unlock/keyring/search modes Back is a no-op (caller can use Escape to
 // quit or close).
@@ -130,7 +131,7 @@ func (s *State) Back() {
 	switch s.Mode {
 	case ModeSearch:
 		// No-op: caller can use this event to close the overlay.
-	case ModeDetail, ModeForm:
+	case ModeDetail, ModeForm, ModeGenerator:
 		s.Mode = ModeSearch
 		s.DetailID = ""
 	case ModePINConfirm:

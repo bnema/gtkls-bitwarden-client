@@ -119,11 +119,17 @@ func TestBack(t *testing.T) {
 	s2.Back()
 	require.Equal(t, ModeSearch, s2.Mode)
 
-	// Back from search -> stays search
+	// Back from generator -> search
 	s3 := NewState()
-	s3.Mode = ModeSearch
+	s3.Mode = ModeGenerator
 	s3.Back()
 	require.Equal(t, ModeSearch, s3.Mode)
+
+	// Back from search -> stays search
+	s4 := NewState()
+	s4.Mode = ModeSearch
+	s4.Back()
+	require.Equal(t, ModeSearch, s4.Mode)
 }
 
 func TestSetStatus(t *testing.T) {
@@ -225,6 +231,7 @@ func TestModeUsesPINOnlyEntry(t *testing.T) {
 		ModeSearch,
 		ModeDetail,
 		ModeForm,
+		ModeGenerator,
 		ModePINSetup,
 		ModePINConfirm,
 		ModeTwoFactor,

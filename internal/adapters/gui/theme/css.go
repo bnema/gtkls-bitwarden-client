@@ -230,6 +230,26 @@ entry, passwordentry, searchentry, textview {
   padding: calc(var(--glsbw-scale) * 0.35em) calc(var(--glsbw-scale) * 0.65em);
 }
 
+spinbutton.glsbw-spin {
+  background-color: var(--glsbw-bg-input);
+  color: var(--glsbw-fg);
+  border: 1px solid var(--glsbw-row-hover);
+  border-radius: calc(var(--glsbw-scale) * 0.40em);
+  padding: 0;
+}
+
+spinbutton.glsbw-spin text {
+  background-color: transparent;
+  color: var(--glsbw-fg);
+  box-shadow: none;
+  padding: calc(var(--glsbw-scale) * 0.35em) calc(var(--glsbw-scale) * 0.65em);
+}
+
+spinbutton.glsbw-spin button {
+  background-image: none;
+  box-shadow: none;
+}
+
 entry.glsbw-pin-entry {
   border-radius: calc(var(--glsbw-scale) * 0.55em);
   font-size: 1.35em;
@@ -239,7 +259,8 @@ entry.glsbw-pin-entry {
 entry:focus, entry:focus-within,
 passwordentry:focus, passwordentry:focus-within,
 searchentry:focus, searchentry:focus-within,
-textview:focus, textview:focus-within {
+textview:focus, textview:focus-within,
+spinbutton.glsbw-spin:focus-within {
   border-color: var(--glsbw-focus);
   box-shadow: 0 0 0 1px var(--glsbw-focus-ring);
 }

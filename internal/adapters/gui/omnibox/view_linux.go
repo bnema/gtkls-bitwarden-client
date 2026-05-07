@@ -13,11 +13,13 @@ import (
 	gobject "github.com/bnema/puregotk/v4/gobject"
 	gtklib "github.com/bnema/puregotk/v4/gtk"
 
+	clipadapter "github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/clipboard"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/auth"
 	safelog "github.com/bnema/gtk4-layershell-bitwarden/internal/core/logging"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/in"
+	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/out"
 	"github.com/bnema/zerowrap"
 )
 
@@ -33,31 +35,40 @@ type View struct {
 	retain  func(interface{})
 
 	// Widgets
-	unlockBox        *gtklib.Box
-	emailEntry       *gtklib.Entry
-	passwordEntry    *gtklib.Entry
-	errorLabel       *gtklib.Label
-	searchBox        *gtklib.Box
-	searchEntry      *gtklib.Entry
-	resultsScroll    *gtklib.ScrolledWindow
-	rowsBox          *gtklib.Box
-	modeTabsBox      *gtklib.Box
-	categoryTabsBox  *gtklib.Box
-	searchTab        *gtklib.Button
-	addTab           *gtklib.Button
-	categoryTabs     map[itemCategory]*gtklib.Button
-	detailBox        *gtklib.Box
-	formBox          *gtklib.Box
-	formInitialFocus *gtklib.Entry
-	formSubmit       func()
-	statusLabel      *gtklib.Label
-	statusBox        *gtklib.Box
+	unlockBox            *gtklib.Box
+	emailEntry           *gtklib.Entry
+	passwordEntry        *gtklib.Entry
+	errorLabel           *gtklib.Label
+	searchBox            *gtklib.Box
+	searchEntry          *gtklib.Entry
+	resultsScroll        *gtklib.ScrolledWindow
+	rowsBox              *gtklib.Box
+	modeTabsBox          *gtklib.Box
+	categoryTabsBox      *gtklib.Box
+	searchTab            *gtklib.Button
+	addTab               *gtklib.Button
+	genTab               *gtklib.Button
+	categoryTabs         map[itemCategory]*gtklib.Button
+	detailBox            *gtklib.Box
+	formBox              *gtklib.Box
+	generatorBox         *gtklib.Box
+	generatorLengthSpin  *gtklib.SpinButton
+	generatorLowerCheck  *gtklib.CheckButton
+	generatorUpperCheck  *gtklib.CheckButton
+	generatorNumberCheck *gtklib.CheckButton
+	generatorSymbolCheck *gtklib.CheckButton
+	generatorOutput      *gtklib.Entry
+	formInitialFocus     *gtklib.Entry
+	formSubmit           func()
+	statusLabel          *gtklib.Label
+	statusBox            *gtklib.Box
 
 	mu             sync.Mutex
 	currentItem    vault.Item
 	activeCategory itemCategory
 	searchTimer    *time.Timer
 	searchLock     sync.Mutex
+	clipboard      out.Clipboard
 
 	// tempMasterPassword and tempPIN hold sensitive values during
 	// ModePINSetup / ModePINConfirm (PIN enrollment). They are cleared
@@ -175,6 +186,42 @@ func New(ctx context.Context, service in.AppService, quit func(), retainFn func(
 	}
 
 	v.buildUI()
+	v.clipboard = clipadapter.NewWaylandPreferred(
+		func(text string) error {
+			done := make(chan error, 1)
+			idleAddOnce(func() {
+				if v.Root == nil {
+					done <- clipadapter.ErrClipboardUnavailable
+					return
+				}
+				clipboard := v.Root.Widget.GetClipboard()
+				if clipboard == nil {
+					done <- clipadapter.ErrClipboardUnavailable
+					return
+				}
+				clipboard.SetText(text)
+				done <- nil
+			})
+			return <-done
+		},
+		func() error {
+			done := make(chan error, 1)
+			idleAddOnce(func() {
+				if v.Root == nil {
+					done <- clipadapter.ErrClipboardUnavailable
+					return
+				}
+				clipboard := v.Root.Widget.GetClipboard()
+				if clipboard == nil {
+					done <- clipadapter.ErrClipboardUnavailable
+					return
+				}
+				clipboard.SetText("")
+				done <- nil
+			})
+			return <-done
+		},
+	)
 	v.showUnlock()
 
 	// Determine initial mode from configured email and auth status detail.
@@ -312,6 +359,9 @@ func (v *View) buildUI() {
 	v.formBox = gtklib.NewBox(gtklib.OrientationVerticalValue, 4)
 	v.searchBox.Append(&v.formBox.Widget)
 
+	v.buildGeneratorUI()
+	v.searchBox.Append(&v.generatorBox.Widget)
+
 	// Status label
 	statusText := ""
 	v.statusLabel = gtklib.NewLabel(&statusText)
@@ -359,10 +409,12 @@ func (v *View) buildUI() {
 func (v *View) buildTabs() {
 	v.modeTabsBox = gtklib.NewBox(gtklib.OrientationHorizontalValue, 0)
 	v.modeTabsBox.GetStyleContext().AddClass("glsbw-header")
-	v.searchTab = v.newTabButton("Search", "glsbw-tab", func() { v.switchMainTab(false) })
-	v.addTab = v.newTabButton("Add", "glsbw-tab", func() { v.switchMainTab(true) })
+	v.searchTab = v.newTabButton("Search", "glsbw-tab", func() { v.switchMainTab(ModeSearch) })
+	v.addTab = v.newTabButton("Add", "glsbw-tab", func() { v.switchMainTab(ModeForm) })
+	v.genTab = v.newTabButton("Gen", "glsbw-tab", func() { v.switchMainTab(ModeGenerator) })
 	v.modeTabsBox.Append(&v.searchTab.Widget)
 	v.modeTabsBox.Append(&v.addTab.Widget)
+	v.modeTabsBox.Append(&v.genTab.Widget)
 
 	v.categoryTabsBox = gtklib.NewBox(gtklib.OrientationHorizontalValue, 0)
 	v.categoryTabsBox.GetStyleContext().AddClass("glsbw-category-bar")
@@ -394,18 +446,21 @@ func (v *View) newTabButton(label, class string, onClick func()) *gtklib.Button 
 	return btn
 }
 
-func (v *View) switchMainTab(add bool) {
-	if add {
+func (v *View) switchMainTab(mode Mode) {
+	switch mode {
+	case ModeForm:
 		v.startQuickAddForCategory()
-		return
+	case ModeGenerator:
+		v.startPasswordGenerator()
+	default:
+		v.mu.Lock()
+		v.state.Mode = ModeSearch
+		v.mu.Unlock()
+		v.render()
+		v.updateTabStyles()
+		v.searchEntry.GrabFocus()
+		v.refreshSearchRows()
 	}
-	v.mu.Lock()
-	v.state.Mode = ModeSearch
-	v.mu.Unlock()
-	v.render()
-	v.updateTabStyles()
-	v.searchEntry.GrabFocus()
-	v.refreshSearchRows()
 }
 
 func (v *View) setCategory(category itemCategory) {
@@ -457,11 +512,13 @@ func (v *View) updateTabStyles() {
 			ctx.RemoveClass("active")
 		}
 	}
-	setActive(v.searchTab, mode != ModeForm)
+	setActive(v.searchTab, mode == ModeSearch)
 	setActive(v.addTab, mode == ModeForm)
+	setActive(v.genTab, mode == ModeGenerator)
+	showCategories := mode == ModeSearch || mode == ModeForm
 	for cat, btn := range v.categoryTabs {
 		setActive(btn, cat == category)
-		btn.SetVisible(mode != ModeForm || cat != categoryAll)
+		btn.SetVisible(showCategories && (mode != ModeForm || cat != categoryAll))
 	}
 }
 
@@ -674,6 +731,17 @@ func (v *View) AttachKeyController(window *gtklib.Window) {
 			return false
 		}
 
+		handleGenerator := func() bool {
+			if kv == gdk.KEY_Escape || kv == gdk.KEY_BackSpace {
+				v.state.Back()
+				v.mu.Unlock()
+				idleAddOnce(func() { v.render() })
+				return true
+			}
+			v.mu.Unlock()
+			return false
+		}
+
 		switch mode {
 		case ModeUnlock, ModePINUnlock, ModeKeyringError, ModePINRenew:
 			return handleUnlock()
@@ -687,6 +755,8 @@ func (v *View) AttachKeyController(window *gtklib.Window) {
 			return handleDetail()
 		case ModeForm:
 			return handleForm()
+		case ModeGenerator:
+			return handleGenerator()
 		default:
 			v.mu.Unlock()
 			return false
@@ -720,6 +790,12 @@ func (v *View) GrabFocus() {
 			v.formInitialFocus.GrabFocus()
 		} else {
 			v.formBox.GrabFocus()
+		}
+	case ModeGenerator:
+		if v.generatorLengthSpin != nil {
+			v.generatorLengthSpin.GrabFocus()
+		} else {
+			v.generatorBox.GrabFocus()
 		}
 	}
 }
@@ -1304,11 +1380,13 @@ func (v *View) render() {
 
 	v.renderUnlockModeWidgets(mode)
 	v.unlockBox.SetVisible(mode == ModeUnlock || mode == ModePINUnlock || mode == ModePINRenew || mode == ModeKeyringError || mode == ModePINSetup || mode == ModePINConfirm || mode == ModeTwoFactor)
-	v.searchBox.SetVisible(mode == ModeSearch || mode == ModeForm)
+	v.searchBox.SetVisible(mode == ModeSearch || mode == ModeForm || mode == ModeGenerator)
+	v.categoryTabsBox.SetVisible(mode == ModeSearch || mode == ModeForm)
 	v.searchEntry.SetVisible(mode == ModeSearch)
 	v.resultsScroll.SetVisible(mode == ModeSearch)
 	v.detailBox.SetVisible(mode == ModeDetail)
 	v.formBox.SetVisible(mode == ModeForm)
+	v.generatorBox.SetVisible(mode == ModeGenerator)
 	v.updateTabStyles()
 	v.renderStatus()
 }
