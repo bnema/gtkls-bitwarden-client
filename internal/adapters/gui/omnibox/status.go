@@ -84,6 +84,8 @@ func ShouldRefreshRowsOnEvent(kind in.EventKind) bool {
 	return kind == in.IndexReady || kind == in.SyncUpdated
 }
 
+// plural is intentionally English-only because the overlay currently has no
+// localization layer; route through i18n/CLDR before adding translated UI text.
 func plural(n int, one, many string) string {
 	if n == 1 {
 		return one

@@ -3,6 +3,8 @@ package theme
 import (
 	"fmt"
 	"math"
+	"strconv"
+	"strings"
 
 	coretheme "github.com/bnema/gtk4-layershell-bitwarden/internal/core/theme"
 )
@@ -14,6 +16,10 @@ func BuildCSS(p coretheme.Palette, scale float64) string {
 		scale = 1.0
 	}
 	scale = math.Round(math.Min(3.0, math.Max(0.5, scale))*100) / 100
+	inputBg := darkenHex(p.Bg, 0.78)
+	accentGlow := rgbaHex(p.Accent, 0.08)
+	accentHover := rgbaHex(p.Accent, 0.06)
+	accentFocus := rgbaHex(p.Accent, 0.30)
 
 	return fmt.Sprintf(`/* glsbw theme — auto-generated */
 :root {
@@ -30,6 +36,10 @@ func BuildCSS(p coretheme.Palette, scale float64) string {
   --glsbw-status-warning: %s;
   --glsbw-status-conflict: %s;
   --glsbw-status-danger: %s;
+  --glsbw-bg-input: %s;
+  --glsbw-accent-glow: %s;
+  --glsbw-accent-hover: %s;
+  --glsbw-accent-focus: %s;
 
   --glsbw-row-height: calc(var(--glsbw-scale) * 3.25em);
   --glsbw-window-width: calc(var(--glsbw-scale) * 37em);
@@ -56,7 +66,7 @@ window {
   background-color: var(--glsbw-bg);
   border: 1px solid var(--glsbw-row-hover);
   border-radius: var(--glsbw-radius);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.50), 0 0 16px rgba(245, 158, 11, 0.08);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.50), 0 0 16px var(--glsbw-accent-glow);
   color: var(--glsbw-fg);
   min-width: var(--glsbw-window-width);
   max-width: var(--glsbw-window-width);
@@ -81,7 +91,7 @@ window {
 }
 
 entry, passwordentry, searchentry, textview {
-  background-color: #0a140f;
+  background-color: var(--glsbw-bg-input);
   color: var(--glsbw-fg);
   border: 1px solid var(--glsbw-row-hover);
   border-radius: calc(var(--glsbw-scale) * 0.40em);
@@ -93,7 +103,7 @@ passwordentry:focus, passwordentry:focus-within,
 searchentry:focus, searchentry:focus-within,
 textview:focus, textview:focus-within {
   border-color: var(--glsbw-accent);
-  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.30);
+  box-shadow: 0 0 0 1px var(--glsbw-accent-focus);
 }
 
 .glsbw-row {
@@ -104,7 +114,7 @@ textview:focus, textview:focus-within {
 }
 
 .glsbw-row:hover {
-  background-color: rgba(245, 158, 11, 0.06);
+  background-color: var(--glsbw-accent-hover);
 }
 
 .glsbw-row:selected,
@@ -157,5 +167,41 @@ textview:focus, textview:focus-within {
 `, scale,
 		p.Bg, p.Fg, p.Accent, p.AccentFg,
 		p.RowHover, p.RowSelected,
-		p.StatusOK, p.StatusPending, p.StatusWarning, p.StatusConflict, p.StatusDanger)
+		p.StatusOK, p.StatusPending, p.StatusWarning, p.StatusConflict, p.StatusDanger,
+		inputBg, accentGlow, accentHover, accentFocus)
+}
+
+func darkenHex(color string, factor float64) string {
+	r, g, b, ok := parseHexColor(color)
+	if !ok {
+		return color
+	}
+	return fmt.Sprintf("#%02x%02x%02x", clampColor(float64(r)*factor), clampColor(float64(g)*factor), clampColor(float64(b)*factor))
+}
+
+func rgbaHex(color string, alpha float64) string {
+	r, g, b, ok := parseHexColor(color)
+	if !ok {
+		return color
+	}
+	return fmt.Sprintf("rgba(%d, %d, %d, %.2f)", r, g, b, math.Min(1, math.Max(0, alpha)))
+}
+
+func parseHexColor(color string) (r, g, b int, ok bool) {
+	hex := strings.TrimPrefix(strings.TrimSpace(color), "#")
+	if len(hex) == 3 {
+		hex = strings.Repeat(hex[0:1], 2) + strings.Repeat(hex[1:2], 2) + strings.Repeat(hex[2:3], 2)
+	}
+	if len(hex) != 6 {
+		return 0, 0, 0, false
+	}
+	value, err := strconv.ParseUint(hex, 16, 32)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	return int(value >> 16), int(value>>8) & 0xff, int(value) & 0xff, true
+}
+
+func clampColor(value float64) int {
+	return int(math.Round(math.Min(255, math.Max(0, value))))
 }

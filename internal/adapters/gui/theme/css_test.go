@@ -86,11 +86,35 @@ func TestBuildCSS_DarkInputsUsePaletteColors(t *testing.T) {
 	if !strings.Contains(css, "entry, passwordentry, searchentry, textview") {
 		t.Fatalf("expected input styling selector in CSS")
 	}
-	if !strings.Contains(css, "background-color: #0a140f") {
-		t.Fatalf("expected inputs to use sekeve-style dark background")
+	if !strings.Contains(css, "--glsbw-bg-input:") {
+		t.Fatalf("expected input background variable in CSS")
+	}
+	if !strings.Contains(css, "background-color: var(--glsbw-bg-input)") {
+		t.Fatalf("expected inputs to use palette-derived background variable")
 	}
 	if !strings.Contains(css, p.Bg) || !strings.Contains(css, p.Fg) {
 		t.Fatalf("expected palette colors in CSS")
+	}
+}
+
+func TestBuildCSS_DerivesAccentEffectsFromPalette(t *testing.T) {
+	p := coretheme.DefaultDarkPalette()
+	p.Accent = "#336699"
+	p.RowSelected = "rgba(51, 102, 153, 0.10)"
+	css := BuildCSS(p, 1.0)
+
+	for _, expected := range []string{
+		"--glsbw-accent-glow: rgba(51, 102, 153, 0.08)",
+		"--glsbw-accent-hover: rgba(51, 102, 153, 0.06)",
+		"--glsbw-accent-focus: rgba(51, 102, 153, 0.30)",
+		"box-shadow: 0 8px 32px rgba(0, 0, 0, 0.50), 0 0 16px var(--glsbw-accent-glow)",
+	} {
+		if !strings.Contains(css, expected) {
+			t.Errorf("expected %q in CSS", expected)
+		}
+	}
+	if strings.Contains(css, "rgba(245, 158, 11") {
+		t.Fatalf("expected CSS not to hardcode default accent rgba values")
 	}
 }
 
