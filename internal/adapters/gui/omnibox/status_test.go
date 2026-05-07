@@ -107,26 +107,20 @@ func TestStatusFromEvent_Default(t *testing.T) {
 }
 
 func TestReadyStatus(t *testing.T) {
-	t.Run("empty while syncing", func(t *testing.T) {
-		st := ReadyStatus(0, true)
-		require.Equal(t, "No cached items yet — syncing…", st.Text)
-		require.True(t, st.Syncing)
-		require.Zero(t, st.ItemCount)
-	})
-	t.Run("empty after sync", func(t *testing.T) {
-		st := ReadyStatus(0, false)
+	t.Run("empty clears unlocking state", func(t *testing.T) {
+		st := ReadyStatus(0)
 		require.Equal(t, "Vault ready — 0 items", st.Text)
 		require.False(t, st.Syncing)
 		require.Zero(t, st.ItemCount)
 	})
 	t.Run("one item", func(t *testing.T) {
-		st := ReadyStatus(1, false)
+		st := ReadyStatus(1)
 		require.Equal(t, "Vault ready — 1 item", st.Text)
 		require.False(t, st.Syncing)
 		require.Equal(t, 1, st.ItemCount)
 	})
 	t.Run("many items", func(t *testing.T) {
-		st := ReadyStatus(2, false)
+		st := ReadyStatus(2)
 		require.Equal(t, "Vault ready — 2 items", st.Text)
 		require.False(t, st.Syncing)
 		require.Equal(t, 2, st.ItemCount)

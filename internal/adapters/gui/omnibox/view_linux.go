@@ -925,10 +925,9 @@ func (v *View) loadAllItems() {
 		rows := RowsFromItems(items)
 		idleAddOnce(func() {
 			v.mu.Lock()
-			syncing := v.state.Status.Syncing
 			v.state.Query = ""
 			v.state.SetRows(rows)
-			v.state.SetStatus(ReadyStatus(len(items), syncing))
+			v.state.SetStatus(ReadyStatus(len(items)))
 			v.mu.Unlock()
 			v.renderRows()
 			v.renderStatus()

@@ -60,10 +60,7 @@ func StatusFromEvent(evt in.Event) Status {
 
 // ReadyStatus returns a safe status summary for the currently loaded vault.
 // It intentionally exposes only aggregate counts, never item names or fields.
-func ReadyStatus(itemCount int, syncing bool) Status {
-	if itemCount <= 0 && syncing {
-		return Status{Text: "No cached items yet — syncing…", Syncing: true}
-	}
+func ReadyStatus(itemCount int) Status {
 	return Status{Text: fmt.Sprintf("Vault ready — %d %s", itemCount, plural(itemCount, "item", "items")), ItemCount: itemCount}
 }
 
