@@ -1429,6 +1429,24 @@ func (s *Service) removeReplayedOutboxLocked(replayed []coresync.OutboxMutation)
 // saveCacheAsyncLocked snapshots decrypted state, then asynchronously persists
 // encrypted cache and encrypted outbox stores. The caller MUST hold s.mu.
 func (s *Service) saveCacheAsyncLocked(ctx context.Context) {
+	s.saveCacheSnapshotAsyncLocked(ctx, nil)
+}
+
+// saveCacheItemsAsyncLocked updates the encrypted cache from the current cache
+// contents rather than from resident s.items. This preserves PIN-unlocked
+// sessions, where resident plaintext intentionally stays empty/partial.
+// The caller MUST hold s.mu.
+func (s *Service) saveCacheItemsAsyncLocked(ctx context.Context, mutateItems func([]vault.Item) []vault.Item) {
+	s.saveCacheSnapshotAsyncLocked(ctx, mutateItems)
+}
+
+// saveCacheSnapshotAsyncLocked snapshots the current key/outbox and persists
+// cache state asynchronously. If mutateItems is non-nil, items/folders are
+// loaded from the existing encrypted cache, mutated, and saved back; otherwise
+// resident s.items/s.folders are snapshotted. The caller MUST hold s.mu.
+func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutateItems func([]vault.Item) []vault.Item) {
+	s.saveSeq++
+	seq := s.saveSeq
 	key := make([]byte, len(s.cacheKey))
 	copy(key, s.cacheKey)
 	salt := make([]byte, len(s.cacheSalt))
@@ -1449,21 +1467,99 @@ func (s *Service) saveCacheAsyncLocked(ctx context.Context) {
 	}
 
 	s.saveWG.Go(func() {
+		s.cacheSaveMu.Lock()
+		defer s.cacheSaveMu.Unlock()
+
+		// The seq/s.saveSeq check runs after cacheSaveMu to skip redundant I/O
+		// if a newer save was queued while this goroutine waited. The newer
+		// goroutine owns the durable write; Shutdown waits on saveWG, and each
+		// save has a bounded timeout, so skipping stale snapshots is intentional.
+		s.mu.Lock()
+		stale := seq != s.saveSeq
+		s.mu.Unlock()
+		if stale {
+			return
+		}
+
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 
 		if outboxStore != nil {
+			// Persist the encrypted outbox independently of cache item patching. If
+			// mutateItems later cannot load the item cache, keeping outbox durable is
+			// still preferable to losing queued local mutations.
 			outboxLog, outboxStarted := logAppServiceStart(cleanupCtx, "save_outbox")
 			err := outboxStore.Save(cleanupCtx, key, outboxSnap)
 			logAppServiceFinishCount(outboxLog, outboxStarted, err, len(outboxSnap))
 		}
 
-		if cacheStore != nil && box != nil && len(salt) > 0 {
+		if cacheStore != nil && box != nil {
+			if len(salt) == 0 {
+				if snap, err := cacheStore.Load(cleanupCtx); err == nil && len(snap.CacheKeySalt) > 0 {
+					salt = append([]byte(nil), snap.CacheKeySalt...)
+				}
+			}
+			if len(salt) == 0 {
+				log := appServiceLog(cleanupCtx, "save_cache")
+				log.Warn().Msg("no cache salt recovered; skipping cache save")
+				return
+			}
+
 			cacheLog, cacheStarted := logAppServiceStart(cleanupCtx, "save_cache")
+			if mutateItems != nil {
+				loadedItems, loadedFolders, _, loadErr := s.loadCachedVaultWithKey(cleanupCtx, key)
+				if loadErr != nil {
+					cacheLog.Warn().
+						Str("error_kind", safelog.SafeErrorKind(loadErr)).
+						Msg("skipping cache save: failed to load existing cache for mutation")
+					logAppServiceFinishCount(cacheLog, cacheStarted, loadErr, 0)
+					return
+				}
+				itemsSnap = mutateItems(loadedItems)
+				// Keep folders from the encrypted cache, not resident s.folders: PIN
+				// unlock sessions intentionally keep resident vault state empty.
+				foldersSnap = loadedFolders
+			}
+
 			err := saveEncryptedSnapshot(cleanupCtx, cacheStore, box, key, salt, accountHash, itemsSnap, foldersSnap, outboxSnap)
 			logAppServiceFinishCount(cacheLog, cacheStarted, err, len(itemsSnap)+len(foldersSnap)+len(outboxSnap))
 		}
 	})
+}
+
+func upsertVaultItem(items []vault.Item, item vault.Item) []vault.Item {
+	out := make([]vault.Item, len(items), len(items)+1)
+	copy(out, items)
+	for i, existing := range out {
+		if existing.ID == item.ID {
+			out[i] = item
+			return out
+		}
+	}
+	return append(out, item)
+}
+
+func markVaultItemDeleted(items []vault.Item, id string, deleted bool) []vault.Item {
+	out := make([]vault.Item, len(items))
+	copy(out, items)
+	for i := range out {
+		if out[i].ID == id {
+			out[i].Deleted = deleted
+			out[i].SyncStatus = vault.SyncStatusSynced
+			return out
+		}
+	}
+	return out
+}
+
+func removeVaultItem(items []vault.Item, id string) []vault.Item {
+	out := make([]vault.Item, 0, len(items))
+	for _, item := range items {
+		if item.ID != id {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func (s *Service) accountHashLocked() string {
@@ -1778,6 +1874,9 @@ func (s *Service) Create(ctx context.Context, item vault.Item) (retItem vault.It
 			remoteItem.SyncStatus = vault.SyncStatusSynced
 			s.items = append(s.items, remoteItem)
 			s.rebuildIndexLocked()
+			s.saveCacheItemsAsyncLocked(ctx, func(items []vault.Item) []vault.Item {
+				return upsertVaultItem(items, remoteItem)
+			})
 			s.mu.Unlock()
 			s.emit(SyncUpdated, "item created remotely")
 			return remoteItem, nil
@@ -1846,6 +1945,9 @@ func (s *Service) Update(ctx context.Context, id string, item vault.Item) (retIt
 				}
 			}
 			s.rebuildIndexLocked()
+			s.saveCacheItemsAsyncLocked(ctx, func(items []vault.Item) []vault.Item {
+				return upsertVaultItem(items, remoteItem)
+			})
 			s.mu.Unlock()
 			s.emit(SyncUpdated, "item updated remotely")
 			return remoteItem, nil
@@ -1919,6 +2021,9 @@ func (s *Service) Trash(ctx context.Context, id string) (retErr error) {
 				}
 			}
 			s.rebuildIndexLocked()
+			s.saveCacheItemsAsyncLocked(ctx, func(items []vault.Item) []vault.Item {
+				return markVaultItemDeleted(items, id, true)
+			})
 			s.mu.Unlock()
 			s.emit(SyncUpdated, "item trashed remotely")
 			return nil
@@ -1986,6 +2091,9 @@ func (s *Service) Restore(ctx context.Context, id string) (retItem vault.Item, r
 				}
 			}
 			s.rebuildIndexLocked()
+			s.saveCacheItemsAsyncLocked(ctx, func(items []vault.Item) []vault.Item {
+				return upsertVaultItem(items, remoteItem)
+			})
 			s.mu.Unlock()
 			s.emit(SyncUpdated, "item restored remotely")
 			return remoteItem, nil
@@ -2053,6 +2161,9 @@ func (s *Service) Delete(ctx context.Context, id string) (retErr error) {
 				}
 			}
 			s.rebuildIndexLocked()
+			s.saveCacheItemsAsyncLocked(ctx, func(items []vault.Item) []vault.Item {
+				return removeVaultItem(items, id)
+			})
 			s.mu.Unlock()
 			s.emit(SyncUpdated, "item deleted remotely")
 			return nil

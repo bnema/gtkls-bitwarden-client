@@ -2,6 +2,9 @@ package omnibox
 
 import (
 	"errors"
+	"fmt"
+	"net/url"
+	"strings"
 
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
 )
@@ -85,20 +88,26 @@ func EditableFromItem(item vault.Item) EditableItem {
 
 // BuildItem creates a vault.Item from the EditableItem fields.
 func (e EditableItem) BuildItem() vault.Item {
+	name := strings.TrimSpace(e.Name)
+	if e.Type == vault.ItemTypeLogin && name == "" {
+		name = DeriveLoginName(e.URI, e.Username)
+	}
+
 	item := vault.Item{
-		Name:  e.Name,
+		Name:  name,
 		Type:  e.Type,
 		Notes: e.Notes,
 	}
 	switch e.Type {
 	case vault.ItemTypeLogin:
 		login := &vault.Login{
-			Username: e.Username,
+			Username: strings.TrimSpace(e.Username),
+			// Password whitespace is intentional secret material; do not trim it.
 			Password: e.Password,
-			TOTP:     e.TOTP,
+			TOTP:     strings.TrimSpace(e.TOTP),
 		}
-		if e.URI != "" {
-			login.URIs = []vault.URI{{URI: e.URI}}
+		if uri := strings.TrimSpace(e.URI); uri != "" {
+			login.URIs = []vault.URI{{URI: uri}}
 		}
 		item.Login = login
 	case vault.ItemTypeSecureNote:
@@ -130,8 +139,73 @@ func (e EditableItem) BuildItem() vault.Item {
 // ValidateItem checks that the EditableItem has a non-empty Name.
 // Returns nil if valid, or an error describing the first issue.
 func ValidateItem(e EditableItem) error {
-	if e.Name == "" {
+	if e.Type == vault.ItemTypeLogin {
+		if strings.TrimSpace(e.Name) == "" && DeriveLoginName(e.URI, e.Username) == "" {
+			return errors.New("site or username is required")
+		}
+		return nil
+	}
+
+	if strings.TrimSpace(e.Name) == "" {
 		return errors.New("item name is required")
 	}
 	return nil
+}
+
+// DeriveLoginName creates a concise display name from a login URI/site and
+// username. It mirrors sekeve's quick-add ergonomics: the user can type only a
+// site plus optional username, without manually filling a separate name field.
+func DeriveLoginName(site, username string) string {
+	domain := ExtractDomain(strings.TrimSpace(site))
+	username = strings.TrimSpace(username)
+	if domain == "" {
+		return username
+	}
+	if username != "" {
+		return fmt.Sprintf("%s (%s)", domain, username)
+	}
+	return domain
+}
+
+// ExtractDomain parses a URL or bare hostname and returns the host portion.
+func ExtractDomain(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") && !strings.HasPrefix(raw, "//") && strings.Contains(raw, "@") {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	host := hostWithOptionalPort(u)
+	if host == "" && u.User != nil && !strings.Contains(raw, "://") && !strings.HasPrefix(raw, "//") {
+		return raw
+	}
+	if host == "" {
+		u2, _ := url.Parse("https://" + raw)
+		if u2 != nil {
+			host = hostWithOptionalPort(u2)
+		}
+	}
+	if host == "" {
+		return raw
+	}
+	return host
+}
+
+func hostWithOptionalPort(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	host := u.Hostname()
+	if host == "" {
+		return ""
+	}
+	if port := u.Port(); port != "" {
+		return host + ":" + port
+	}
+	return host
 }

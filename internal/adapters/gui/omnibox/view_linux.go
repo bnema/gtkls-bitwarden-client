@@ -33,22 +33,31 @@ type View struct {
 	retain  func(interface{})
 
 	// Widgets
-	unlockBox     *gtklib.Box
-	emailEntry    *gtklib.Entry
-	passwordEntry *gtklib.Entry
-	errorLabel    *gtklib.Label
-	searchBox     *gtklib.Box
-	searchEntry   *gtklib.Entry
-	rowsBox       *gtklib.Box
-	detailBox     *gtklib.Box
-	formBox       *gtklib.Box
-	statusLabel   *gtklib.Label
-	statusBox     *gtklib.Box
+	unlockBox        *gtklib.Box
+	emailEntry       *gtklib.Entry
+	passwordEntry    *gtklib.Entry
+	errorLabel       *gtklib.Label
+	searchBox        *gtklib.Box
+	searchEntry      *gtklib.Entry
+	resultsScroll    *gtklib.ScrolledWindow
+	rowsBox          *gtklib.Box
+	modeTabsBox      *gtklib.Box
+	categoryTabsBox  *gtklib.Box
+	searchTab        *gtklib.Button
+	addTab           *gtklib.Button
+	categoryTabs     map[itemCategory]*gtklib.Button
+	detailBox        *gtklib.Box
+	formBox          *gtklib.Box
+	formInitialFocus *gtklib.Entry
+	formSubmit       func()
+	statusLabel      *gtklib.Label
+	statusBox        *gtklib.Box
 
-	mu          sync.Mutex
-	currentItem vault.Item
-	searchTimer *time.Timer
-	searchLock  sync.Mutex
+	mu             sync.Mutex
+	currentItem    vault.Item
+	activeCategory itemCategory
+	searchTimer    *time.Timer
+	searchLock     sync.Mutex
 
 	// tempMasterPassword and tempPIN hold sensitive values during
 	// ModePINSetup / ModePINConfirm (PIN enrollment). They are cleared
@@ -153,11 +162,12 @@ func (v *View) resetDynamicCallbacks() {
 // the initial mode, and starts the event listener.
 func New(ctx context.Context, service in.AppService, quit func(), retainFn func(interface{})) *View {
 	v := &View{
-		service: service,
-		ctx:     ctx,
-		state:   NewState(),
-		quit:    quit,
-		retain:  retainFn,
+		service:        service,
+		ctx:            ctx,
+		state:          NewState(),
+		quit:           quit,
+		retain:         retainFn,
+		activeCategory: categoryAll,
 	}
 
 	v.buildUI()
@@ -215,6 +225,7 @@ func New(ctx context.Context, service in.AppService, quit func(), retainFn func(
 // buildUI creates all GTK widgets.
 func (v *View) buildUI() {
 	v.Root = gtklib.NewBox(gtklib.OrientationVerticalValue, 0)
+	v.Root.Widget.SetSizeRequest(640, -1)
 	styleCtx := v.Root.GetStyleContext()
 	styleCtx.AddClass("glsbw-omnibox")
 
@@ -272,6 +283,10 @@ func (v *View) buildUI() {
 	// --- Search view (initially hidden) ---
 	v.searchBox = gtklib.NewBox(gtklib.OrientationVerticalValue, 4)
 
+	v.buildTabs()
+	v.searchBox.Append(&v.modeTabsBox.Widget)
+	v.searchBox.Append(&v.categoryTabsBox.Widget)
+
 	searchPlaceholder := "Search vault…"
 	v.searchEntry = gtklib.NewEntry()
 	v.searchEntry.SetPlaceholderText(&searchPlaceholder)
@@ -279,19 +294,33 @@ func (v *View) buildUI() {
 	v.searchBox.Append(&v.searchEntry.Widget)
 
 	// Rows container
-	scrollWin := gtklib.NewScrolledWindow()
-	scrollWin.SetVexpand(true)
+	v.resultsScroll = gtklib.NewScrolledWindow()
+	v.resultsScroll.SetVexpand(true)
+	v.resultsScroll.SetMinContentHeight(320)
+	v.resultsScroll.SetMaxContentHeight(420)
 	v.rowsBox = gtklib.NewBox(gtklib.OrientationVerticalValue, 0)
-	scrollWin.SetChild(&v.rowsBox.Widget)
-	v.searchBox.Append(&scrollWin.Widget)
+	v.resultsScroll.SetChild(&v.rowsBox.Widget)
+	v.searchBox.Append(&v.resultsScroll.Widget)
+
+	// Form view shares the same content slot as search results.
+	v.formBox = gtklib.NewBox(gtklib.OrientationVerticalValue, 4)
+	v.searchBox.Append(&v.formBox.Widget)
 
 	// Status label
 	statusText := ""
 	v.statusLabel = gtklib.NewLabel(&statusText)
 	v.statusLabel.GetStyleContext().AddClass("glsbw-status")
-	v.statusBox = gtklib.NewBox(gtklib.OrientationHorizontalValue, 0)
+	v.statusBox = gtklib.NewBox(gtklib.OrientationHorizontalValue, 10)
 	v.statusBox.GetStyleContext().AddClass("glsbw-footer")
+	v.statusLabel.SetHexpand(true)
+	v.statusLabel.SetHalign(gtklib.AlignStartValue)
 	v.statusBox.Append(&v.statusLabel.Widget)
+	for _, hint := range []string{"Enter copy", "^Enter details", "^N add", "Esc close"} {
+		hintText := hint
+		hintLabel := gtklib.NewLabel(&hintText)
+		hintLabel.GetStyleContext().AddClass("glsbw-hint")
+		v.statusBox.Append(&hintLabel.Widget)
+	}
 	v.searchBox.Append(&v.statusBox.Widget)
 
 	v.Root.Append(&v.searchBox.Widget)
@@ -319,10 +348,132 @@ func (v *View) buildUI() {
 	// --- Detail view (initially hidden) ---
 	v.detailBox = gtklib.NewBox(gtklib.OrientationVerticalValue, 4)
 	v.Root.Append(&v.detailBox.Widget)
+}
 
-	// --- Form view (initially hidden) ---
-	v.formBox = gtklib.NewBox(gtklib.OrientationVerticalValue, 4)
-	v.Root.Append(&v.formBox.Widget)
+func (v *View) buildTabs() {
+	v.modeTabsBox = gtklib.NewBox(gtklib.OrientationHorizontalValue, 0)
+	v.modeTabsBox.GetStyleContext().AddClass("glsbw-header")
+	v.searchTab = v.newTabButton("Search", "glsbw-tab", func() { v.switchMainTab(false) })
+	v.addTab = v.newTabButton("Add", "glsbw-tab", func() { v.switchMainTab(true) })
+	v.modeTabsBox.Append(&v.searchTab.Widget)
+	v.modeTabsBox.Append(&v.addTab.Widget)
+
+	v.categoryTabsBox = gtklib.NewBox(gtklib.OrientationHorizontalValue, 0)
+	v.categoryTabsBox.GetStyleContext().AddClass("glsbw-category-bar")
+	v.categoryTabs = map[itemCategory]*gtklib.Button{}
+	for _, def := range []struct {
+		category itemCategory
+		label    string
+	}{
+		{categoryAll, "All"},
+		{categoryLogin, "Login"},
+		{categorySecureNote, "Note"},
+		{categoryCard, "Card"},
+		{categoryIdentity, "Identity"},
+	} {
+		cat := def.category
+		btn := v.newTabButton(def.label, "glsbw-category", func() { v.setCategory(cat) })
+		v.categoryTabs[cat] = btn
+		v.categoryTabsBox.Append(&btn.Widget)
+	}
+	v.updateTabStyles()
+}
+
+func (v *View) newTabButton(label, class string, onClick func()) *gtklib.Button {
+	btn := gtklib.NewButtonWithLabel(label)
+	btn.GetStyleContext().AddClass(class)
+	clickedCb := func(_ gtklib.Button) { onClick() }
+	v.retain(clickedCb)
+	btn.ConnectClicked(&clickedCb)
+	return btn
+}
+
+func (v *View) switchMainTab(add bool) {
+	if add {
+		v.startQuickAddForCategory()
+		return
+	}
+	v.mu.Lock()
+	v.state.Mode = ModeSearch
+	v.mu.Unlock()
+	v.render()
+	v.updateTabStyles()
+	v.searchEntry.GrabFocus()
+	v.refreshSearchRows()
+}
+
+func (v *View) setCategory(category itemCategory) {
+	v.mu.Lock()
+	v.activeCategory = category
+	mode := v.state.Mode
+	v.mu.Unlock()
+	v.updateTabStyles()
+	if mode == ModeForm {
+		v.startQuickAddForCategory()
+		return
+	}
+	v.refreshSearchRows()
+}
+
+func (v *View) startQuickAddForCategory() {
+	v.mu.Lock()
+	category := v.activeCategory
+	if category == categoryAll {
+		category = categoryLogin
+		v.activeCategory = categoryLogin
+	}
+	v.mu.Unlock()
+	v.updateTabStyles()
+
+	item := vault.Item{Type: categoryItemType(category)}
+	if item.Type == vault.ItemTypeLogin {
+		query := strings.TrimSpace(v.searchEntry.GetText())
+		if query != "" {
+			item.Login = &vault.Login{URIs: []vault.URI{{URI: query}}}
+		}
+	}
+	v.showFormItem(item)
+}
+
+func (v *View) updateTabStyles() {
+	v.mu.Lock()
+	mode := v.state.Mode
+	category := v.activeCategory
+	v.mu.Unlock()
+	setActive := func(btn *gtklib.Button, active bool) {
+		if btn == nil {
+			return
+		}
+		ctx := btn.GetStyleContext()
+		if active {
+			ctx.AddClass("active")
+		} else {
+			ctx.RemoveClass("active")
+		}
+	}
+	setActive(v.searchTab, mode != ModeForm)
+	setActive(v.addTab, mode == ModeForm)
+	for cat, btn := range v.categoryTabs {
+		setActive(btn, cat == category)
+		btn.SetVisible(mode != ModeForm || cat != categoryAll)
+	}
+}
+
+func categoryShortcutNumber(kv int) (int, bool) {
+	switch kv {
+	case gdk.KEY_1:
+		return 1, true
+	case gdk.KEY_2:
+		return 2, true
+	case gdk.KEY_3:
+		return 3, true
+	case gdk.KEY_4:
+		return 4, true
+	case gdk.KEY_5:
+		return 5, true
+	default:
+		return 0, false
+	}
 }
 
 // isSearchKey returns true if the keyval is a printable/search character.
@@ -426,6 +577,15 @@ func (v *View) AttachKeyController(window *gtklib.Window) {
 		}
 
 		handleSearch := func() bool {
+			if mod&gdk.ControlMaskValue != 0 {
+				if shortcut, ok := categoryShortcutNumber(kv); ok {
+					if category, ok := categoryShortcutForMode(ModeSearch, shortcut); ok {
+						v.mu.Unlock()
+						idleAddOnce(func() { v.setCategory(category) })
+						return true
+					}
+				}
+			}
 			switch kv {
 			case gdk.KEY_Up:
 				v.state.Move(-1)
@@ -450,14 +610,8 @@ func (v *View) AttachKeyController(window *gtklib.Window) {
 				return false
 			case gdk.KEY_n:
 				if mod&gdk.ControlMaskValue != 0 {
-					v.currentItem = vault.Item{Type: vault.ItemTypeLogin}
-					v.state.Mode = ModeForm
-					item := v.currentItem
 					v.mu.Unlock()
-					idleAddOnce(func() {
-						v.renderForm(item)
-						v.render()
-					})
+					idleAddOnce(func() { v.startQuickAddLogin() })
 					return true
 				}
 				v.mu.Unlock()
@@ -484,10 +638,30 @@ func (v *View) AttachKeyController(window *gtklib.Window) {
 		}
 
 		handleForm := func() bool {
+			if mod&gdk.ControlMaskValue != 0 {
+				if shortcut, ok := categoryShortcutNumber(kv); ok {
+					if category, ok := categoryShortcutForMode(ModeForm, shortcut); ok {
+						v.mu.Unlock()
+						idleAddOnce(func() { v.setCategory(category) })
+						return true
+					}
+				}
+			}
 			if kv == gdk.KEY_Escape || kv == gdk.KEY_BackSpace {
 				v.state.Back()
 				v.mu.Unlock()
 				idleAddOnce(func() { v.render() })
+				return true
+			}
+			ctrlPressed := mod&gdk.ControlMaskValue != 0
+			isEnter := kv == gdk.KEY_Return || kv == gdk.KEY_KP_Enter
+			isSaveKey := kv == gdk.KEY_s
+			if ctrlPressed && (isEnter || isSaveKey) {
+				submit := v.formSubmit
+				v.mu.Unlock()
+				if submit != nil {
+					submit()
+				}
 				return true
 			}
 			v.mu.Unlock()
@@ -534,8 +708,42 @@ func (v *View) GrabFocus() {
 	case ModeDetail:
 		v.detailBox.GrabFocus()
 	case ModeForm:
-		v.formBox.GrabFocus()
+		if v.formInitialFocus != nil {
+			v.formInitialFocus.GrabFocus()
+		} else {
+			v.formBox.GrabFocus()
+		}
 	}
+}
+
+func (v *View) focusFormInitial() {
+	v.mu.Lock()
+	entry := v.formInitialFocus
+	v.mu.Unlock()
+	if entry != nil {
+		entry.GrabFocus()
+		return
+	}
+	v.formBox.GrabFocus()
+}
+
+func (v *View) startQuickAddLogin() {
+	v.mu.Lock()
+	v.activeCategory = categoryLogin
+	v.mu.Unlock()
+	v.startQuickAddForCategory()
+}
+
+func (v *View) showFormItem(item vault.Item) {
+	v.mu.Lock()
+	v.currentItem = item
+	v.state.Mode = ModeForm
+	v.mu.Unlock()
+
+	v.renderForm(item)
+	v.render()
+	v.updateTabStyles()
+	v.focusFormInitial()
 }
 
 // --- Internal methods ---
@@ -925,6 +1133,7 @@ func (v *View) loadAllItems() {
 		rows := RowsFromItems(items)
 		idleAddOnce(func() {
 			v.mu.Lock()
+			rows = v.filterRowsLocked(rows)
 			v.state.Query = ""
 			v.state.SetRows(rows)
 			v.state.SetStatus(ReadyStatus(len(items)))
@@ -973,12 +1182,27 @@ func (v *View) doSearch(query string) {
 		rows := RowsFromScored(results)
 		idleAddOnce(func() {
 			v.mu.Lock()
+			rows = v.filterRowsLocked(rows)
 			v.state.Query = query
 			v.state.SetRows(rows)
 			v.mu.Unlock()
 			v.renderRows()
 		})
 	}()
+}
+
+func (v *View) filterRowsLocked(rows []Row) []Row {
+	if v.activeCategory == categoryAll {
+		return rows
+	}
+	want := string(categoryItemType(v.activeCategory))
+	filtered := rows[:0]
+	for _, row := range rows {
+		if row.Type == want {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
 }
 
 // doPrimaryAction performs the primary action on the selected row.
@@ -1053,12 +1277,16 @@ func (v *View) showError(msg string) {
 // render updates the visibility of all panels based on current mode.
 func (v *View) render() {
 	v.mu.Lock()
-	defer v.mu.Unlock()
+	mode := v.state.Mode
+	v.mu.Unlock()
 
-	v.unlockBox.SetVisible(v.state.Mode == ModeUnlock || v.state.Mode == ModePINUnlock || v.state.Mode == ModePINRenew || v.state.Mode == ModeKeyringError || v.state.Mode == ModePINSetup || v.state.Mode == ModePINConfirm || v.state.Mode == ModeTwoFactor)
-	v.searchBox.SetVisible(v.state.Mode == ModeSearch)
-	v.detailBox.SetVisible(v.state.Mode == ModeDetail)
-	v.formBox.SetVisible(v.state.Mode == ModeForm)
+	v.unlockBox.SetVisible(mode == ModeUnlock || mode == ModePINUnlock || mode == ModePINRenew || mode == ModeKeyringError || mode == ModePINSetup || mode == ModePINConfirm || mode == ModeTwoFactor)
+	v.searchBox.SetVisible(mode == ModeSearch || mode == ModeForm)
+	v.searchEntry.SetVisible(mode == ModeSearch)
+	v.resultsScroll.SetVisible(mode == ModeSearch)
+	v.detailBox.SetVisible(mode == ModeDetail)
+	v.formBox.SetVisible(mode == ModeForm)
+	v.updateTabStyles()
 	v.renderStatus()
 }
 
@@ -1248,6 +1476,7 @@ func (v *View) renderDetail(detail Detail) {
 		idleAddOnce(func() {
 			v.renderForm(item)
 			v.render()
+			v.focusFormInitial()
 		})
 	}
 	handler0 := editBtn.ConnectClicked(&editCb)
@@ -1336,6 +1565,8 @@ func (v *View) renderForm(item vault.Item) {
 	v.resetDynamicCallbacks()
 
 	editable := EditableFromItem(item)
+	v.formInitialFocus = nil
+	v.formSubmit = nil
 
 	// Back button
 	backBtn := gtklib.NewButtonWithLabel("← Back")
@@ -1350,21 +1581,24 @@ func (v *View) renderForm(item vault.Item) {
 	v.formBox.Append(&backBtn.Widget)
 
 	// Scrollable content area
+	uiScale := 1.0
+	if cfg := v.service.Config(); cfg != nil {
+		uiScale = cfg.Appearance.UIScale
+	}
+	contentHeight := ItemFormContentHeight(item.Type, uiScale)
 	scrollWin := gtklib.NewScrolledWindow()
-	scrollWin.SetVexpand(true)
+	scrollWin.SetPolicy(gtklib.PolicyNeverValue, gtklib.PolicyAutomaticValue)
+	scrollWin.SetMinContentHeight(contentHeight)
+	scrollWin.SetMaxContentHeight(contentHeight)
+	scrollWin.SetPropagateNaturalHeight(true)
 	formContent := gtklib.NewBox(gtklib.OrientationVerticalValue, 4)
 	scrollWin.SetChild(&formContent.Widget)
 	v.formBox.Append(&scrollWin.Widget)
 
-	// Common: Name entry
-	nameText := "Name"
-	nameLabel := gtklib.NewLabel(&nameText)
-	formContent.Append(&nameLabel.Widget)
-	nameEntry := gtklib.NewEntry()
-	nameEntry.SetText(editable.Name)
-	formContent.Append(&nameEntry.Widget)
-
-	// Type-specific fields rendered by helper methods.
+	// Type-specific fields rendered by helper methods. Login creation is ordered
+	// for quick keyboard entry: Site → Username → Password, with Name optional
+	// and auto-derived when left blank.
+	var nameEntry *gtklib.Entry
 	var usernameEntry, uriEntry, pwEntry, totpEntry *gtklib.Entry
 	var chEntry, brandEntry, numEntry, expMEntry, expYEntry, codeEntry *gtklib.Entry
 	var fnEntry, lnEntry, emailEntry, phoneEntry, idUserEntry *gtklib.Entry
@@ -1373,6 +1607,24 @@ func (v *View) renderForm(item vault.Item) {
 	switch item.Type {
 	case vault.ItemTypeLogin:
 		usernameEntry, uriEntry, pwEntry, totpEntry = v.renderLoginFormFields(formContent, editable)
+		v.formInitialFocus = uriEntry
+		nameText := "Name (optional, auto-generated)"
+		nameLabel := gtklib.NewLabel(&nameText)
+		formContent.Append(&nameLabel.Widget)
+		nameEntry = gtklib.NewEntry()
+		nameEntry.SetText(editable.Name)
+		formContent.Append(&nameEntry.Widget)
+	default:
+		nameText := "Name"
+		nameLabel := gtklib.NewLabel(&nameText)
+		formContent.Append(&nameLabel.Widget)
+		nameEntry = gtklib.NewEntry()
+		nameEntry.SetText(editable.Name)
+		formContent.Append(&nameEntry.Widget)
+		v.formInitialFocus = nameEntry
+	}
+
+	switch item.Type {
 	case vault.ItemTypeSecureNote:
 		// No additional fields beyond Name and Notes.
 	case vault.ItemTypeCard:
@@ -1389,13 +1641,34 @@ func (v *View) renderForm(item vault.Item) {
 	notesEntry.SetText(editable.Notes)
 	formContent.Append(&notesEntry.Widget)
 
+	// Form-local errors stay visible in form mode and do not rebuild the form,
+	// so invalid submissions preserve typed values and focus.
+	formErrorText := ""
+	formErrorLabel := gtklib.NewLabel(&formErrorText)
+	formErrorLabel.GetStyleContext().AddClass("glsbw-error")
+	formErrorLabel.SetVisible(false)
+	formContent.Append(&formErrorLabel.Widget)
+	showFormError := func(msg string) {
+		if msg == "" {
+			formErrorLabel.SetText("")
+			formErrorLabel.SetVisible(false)
+			return
+		}
+		formErrorLabel.SetText(msg)
+		formErrorLabel.SetVisible(true)
+	}
+
 	// Snapshot current item under lock for the save goroutine.
 	current := v.currentItem
 	isUpdate := current.ID != ""
 
 	// Save button
 	saveBtn := gtklib.NewButtonWithLabel("Save")
-	saveCb := func(_ gtklib.Button) {
+	saving := false
+	submit := func() {
+		if saving {
+			return
+		}
 		e := EditableFromItem(current)
 		e.Name = nameEntry.GetText()
 		e.Notes = notesEntry.GetText()
@@ -1427,14 +1700,14 @@ func (v *View) renderForm(item vault.Item) {
 		}
 
 		if err := ValidateItem(e); err != nil {
-			v.mu.Lock()
-			v.state.Error = err.Error()
-			v.mu.Unlock()
-			idleAddOnce(func() { v.render() })
+			showFormError(err.Error())
 			return
 		}
 
 		updated := e.BuildItem()
+		showFormError("")
+		saving = true
+		saveBtn.Widget.SetSensitive(false)
 
 		go func() {
 			var result vault.Item
@@ -1451,47 +1724,54 @@ func (v *View) renderForm(item vault.Item) {
 				}
 				logOverlayError(v.ctx, operation, err)
 				idleAddOnce(func() {
-					v.mu.Lock()
-					v.state.Error = genericSaveError
-					v.mu.Unlock()
-					v.render()
+					saving = false
+					saveBtn.Widget.SetSensitive(true)
+					showFormError(genericSaveError)
 				})
 				return
 			}
 			idleAddOnce(func() {
 				v.mu.Lock()
 				v.state.Error = ""
-				v.state.SetStatus(Status{})
+				v.state.SetStatus(Status{Text: "Saved " + result.Name})
 				v.currentItem = result
-				v.state.Mode = ModeDetail
-				v.state.DetailID = result.ID
+				v.state.Mode = ModeSearch
+				v.state.DetailID = ""
 				v.mu.Unlock()
-				v.renderDetail(DetailFromItem(result))
 				v.render()
+				v.refreshSearchRows()
+				v.searchEntry.GrabFocus()
 			})
 		}()
 	}
+	v.formSubmit = submit
+	if pwEntry != nil {
+		activateCb := func(_ gtklib.Entry) { submit() }
+		handler := pwEntry.ConnectActivate(&activateCb)
+		v.retainDynamic(&pwEntry.Object, handler, activateCb)
+	}
+	saveCb := func(_ gtklib.Button) { submit() }
 	handler1 := saveBtn.ConnectClicked(&saveCb)
 	v.retainDynamic(&saveBtn.Object, handler1, saveCb)
 	formContent.Append(&saveBtn.Widget)
 }
 
-// renderLoginFormFields renders login-specific fields (Username, URI, Password, TOTP)
-// into formContent and returns the created entry pointers.
+// renderLoginFormFields renders login-specific fields in quick-add order
+// (URI/Site, Username, Password, then TOTP) and returns the created entries.
 func (v *View) renderLoginFormFields(formContent *gtklib.Box, editable EditableItem) (usernameEntry, uriEntry, pwEntry, totpEntry *gtklib.Entry) {
+	uriText := "Site / URI"
+	uriLabel := gtklib.NewLabel(&uriText)
+	formContent.Append(&uriLabel.Widget)
+	uriEntry = gtklib.NewEntry()
+	uriEntry.SetText(editable.URI)
+	formContent.Append(&uriEntry.Widget)
+
 	uText := "Username"
 	usernameLabel := gtklib.NewLabel(&uText)
 	formContent.Append(&usernameLabel.Widget)
 	usernameEntry = gtklib.NewEntry()
 	usernameEntry.SetText(editable.Username)
 	formContent.Append(&usernameEntry.Widget)
-
-	uriText := "URI"
-	uriLabel := gtklib.NewLabel(&uriText)
-	formContent.Append(&uriLabel.Widget)
-	uriEntry = gtklib.NewEntry()
-	uriEntry.SetText(editable.URI)
-	formContent.Append(&uriEntry.Widget)
 
 	pwText := "Password"
 	pwLabel := gtklib.NewLabel(&pwText)
@@ -1501,7 +1781,7 @@ func (v *View) renderLoginFormFields(formContent *gtklib.Box, editable EditableI
 	pwEntry.SetVisibility(false)
 	formContent.Append(&pwEntry.Widget)
 
-	totpText := "TOTP"
+	totpText := "TOTP (optional)"
 	totpLabel := gtklib.NewLabel(&totpText)
 	formContent.Append(&totpLabel.Widget)
 	totpEntry = gtklib.NewEntry()
@@ -1628,12 +1908,8 @@ func (v *View) renderIdentityFormFields(formContent *gtklib.Box, editable Editab
 // renderStatus updates the status label.
 func (v *View) renderStatus() {
 	text := v.state.Status.Text
-	if text == "" {
-		v.statusBox.SetVisible(false)
-	} else {
-		v.statusLabel.SetText(text)
-		v.statusBox.SetVisible(true)
-	}
+	v.statusLabel.SetText(text)
+	v.statusBox.SetVisible(true)
 }
 
 // eventLoop listens for service events and updates status.

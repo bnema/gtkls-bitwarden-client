@@ -42,7 +42,6 @@ func BuildCSS(p coretheme.Palette, scale float64) string {
   --glsbw-accent-focus: %s;
 
   --glsbw-row-height: calc(var(--glsbw-scale) * 3.25em);
-  --glsbw-window-width: calc(var(--glsbw-scale) * 37em);
   --glsbw-padding: calc(var(--glsbw-scale) * 0.65em);
   --glsbw-radius: calc(var(--glsbw-scale) * 0.65em);
 }
@@ -68,9 +67,96 @@ window {
   border-radius: var(--glsbw-radius);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.50), 0 0 16px var(--glsbw-accent-glow);
   color: var(--glsbw-fg);
-  min-width: var(--glsbw-window-width);
-  max-width: var(--glsbw-window-width);
   padding: 0;
+}
+
+.glsbw-header {
+  background-color: var(--glsbw-bg);
+  border-bottom: 1px solid var(--glsbw-row-hover);
+  padding: calc(var(--glsbw-scale) * 0.45em) calc(var(--glsbw-scale) * 0.65em);
+}
+
+.glsbw-category-bar {
+  background-color: var(--glsbw-bg);
+  border-bottom: 1px solid var(--glsbw-row-hover);
+  padding: calc(var(--glsbw-scale) * 0.45em) calc(var(--glsbw-scale) * 0.65em);
+}
+
+.glsbw-omnibox button {
+  background: none;
+  background-color: var(--glsbw-bg-input);
+  background-image: none;
+  border: 1px solid var(--glsbw-row-hover);
+  border-radius: calc(var(--glsbw-scale) * 0.35em);
+  box-shadow: none;
+  color: var(--glsbw-fg);
+  text-shadow: none;
+}
+
+.glsbw-omnibox button label {
+  color: var(--glsbw-fg);
+}
+
+.glsbw-omnibox button:hover,
+.glsbw-omnibox button:focus {
+  background-color: var(--glsbw-accent-hover);
+  background-image: none;
+  border-color: var(--glsbw-accent);
+  box-shadow: 0 0 0 1px var(--glsbw-accent-focus);
+}
+
+button.glsbw-tab,
+button.glsbw-category {
+  background: none;
+  background-color: transparent;
+  background-image: none;
+  border: 1px solid transparent;
+  color: var(--glsbw-fg);
+  min-height: 0;
+  padding: calc(var(--glsbw-scale) * 0.20em) calc(var(--glsbw-scale) * 0.85em);
+}
+
+button.glsbw-category {
+  font-size: 0.86em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+button.glsbw-tab label,
+button.glsbw-category label {
+  color: var(--glsbw-fg);
+}
+
+button.glsbw-tab:hover,
+button.glsbw-category:hover {
+  background-color: var(--glsbw-accent-hover);
+  background-image: none;
+}
+
+button.glsbw-tab:focus,
+button.glsbw-category:focus {
+  border-color: var(--glsbw-accent);
+  box-shadow: 0 0 0 1px var(--glsbw-accent-focus);
+}
+
+button.glsbw-tab.active {
+  background-color: var(--glsbw-accent);
+  background-image: none;
+  color: var(--glsbw-accent-fg);
+}
+
+button.glsbw-tab.active label {
+  color: var(--glsbw-accent-fg);
+}
+
+button.glsbw-category.active {
+  background-color: var(--glsbw-row-selected);
+  background-image: none;
+  color: var(--glsbw-accent);
+}
+
+button.glsbw-category.active label {
+  color: var(--glsbw-accent);
 }
 
 .glsbw-search {
@@ -163,6 +249,12 @@ textview:focus, textview:focus-within {
 .glsbw-footer {
   border-top: 1px solid var(--glsbw-row-hover);
   padding: calc(var(--glsbw-scale) * 0.45em) calc(var(--glsbw-scale) * 1em);
+}
+
+.glsbw-hint {
+  color: var(--glsbw-fg);
+  font-size: 0.78em;
+  opacity: 0.65;
 }
 `, scale,
 		p.Bg, p.Fg, p.Accent, p.AccentFg,

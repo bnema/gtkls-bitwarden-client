@@ -28,6 +28,18 @@ func TestBuildCSS_DefaultDarkPalette_Scale1_2(t *testing.T) {
 	if !strings.Contains(css, ".glsbw-search") {
 		t.Errorf("expected .glsbw-search selector")
 	}
+	if !strings.Contains(css, ".glsbw-header") {
+		t.Errorf("expected .glsbw-header selector")
+	}
+	if !strings.Contains(css, "button.glsbw-tab") {
+		t.Errorf("expected themed button.glsbw-tab selector")
+	}
+	if !strings.Contains(css, "button.glsbw-category") {
+		t.Errorf("expected themed button.glsbw-category selector")
+	}
+	if !strings.Contains(css, "background-image: none") {
+		t.Errorf("expected native GTK button backgrounds to be disabled")
+	}
 	if !strings.Contains(css, ".glsbw-row") {
 		t.Errorf("expected .glsbw-row selector")
 	}
@@ -57,6 +69,12 @@ func TestBuildCSS_DefaultDarkPalette_Scale1_2(t *testing.T) {
 	}
 	if !strings.Contains(css, ".glsbw-footer") {
 		t.Errorf("expected .glsbw-footer selector")
+	}
+	if !strings.Contains(css, ".glsbw-hint") {
+		t.Errorf("expected .glsbw-hint selector")
+	}
+	if strings.Contains(css, "max-width") {
+		t.Errorf("GTK CSS does not support max-width; use widget sizing instead")
 	}
 }
 

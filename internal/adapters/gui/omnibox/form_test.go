@@ -18,6 +18,38 @@ func TestValidateItem_NamePresent(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestValidateItem_LoginAllowsDerivedNameFromURIAndUsername(t *testing.T) {
+	err := ValidateItem(EditableItem{Type: vault.ItemTypeLogin, URI: "https://github.com/login", Username: "octocat"})
+	require.NoError(t, err)
+}
+
+func TestValidateItem_LoginRequiresDerivableName(t *testing.T) {
+	err := ValidateItem(EditableItem{Type: vault.ItemTypeLogin})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "site or username is required")
+}
+
+func TestDeriveLoginName(t *testing.T) {
+	require.Equal(t, "github.com (octocat)", DeriveLoginName("https://github.com/login", "octocat"))
+	require.Equal(t, "github.com", DeriveLoginName("github.com", ""))
+	require.Equal(t, "octocat", DeriveLoginName("", "octocat"))
+	require.Equal(t, "example.com", DeriveLoginName("https://user:pass@example.com/login", ""))
+	require.Equal(t, "localhost:3000", DeriveLoginName("http://localhost:3000", ""))
+	require.Equal(t, "user@example.com", DeriveLoginName("user@example.com", ""))
+}
+
+func TestEditableItemBuildItem_DerivesLoginName(t *testing.T) {
+	e := EditableItem{Type: vault.ItemTypeLogin, URI: " https://github.com/login ", Username: " octocat ", Password: "secret"}
+	item := e.BuildItem()
+	require.Equal(t, "github.com (octocat)", item.Name)
+	require.Equal(t, vault.ItemTypeLogin, item.Type)
+	require.NotNil(t, item.Login)
+	require.Equal(t, "octocat", item.Login.Username)
+	require.Equal(t, "secret", item.Login.Password)
+	require.Len(t, item.Login.URIs, 1)
+	require.Equal(t, "https://github.com/login", item.Login.URIs[0].URI)
+}
+
 func TestEditableFromItem_RoundTrip_Login(t *testing.T) {
 	item := vault.Item{
 		Name:  "Example",

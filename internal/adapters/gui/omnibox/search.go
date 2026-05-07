@@ -81,6 +81,7 @@ func rowFromItem(item vault.Item) Row {
 		Conflict: item.SyncStatus == vault.SyncStatusConflict,
 		Pending:  item.SyncStatus == vault.SyncStatusPending,
 		Subtitle: buildRowSubtitle(item),
+		Type:     string(item.Type),
 	}
 	r.Badge = buildBadge(item)
 	return r

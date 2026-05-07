@@ -43,6 +43,7 @@ type Row struct {
 	Title    string
 	Subtitle string
 	Badge    string
+	Type     string
 	Conflict bool
 	Pending  bool
 	Deleted  bool
