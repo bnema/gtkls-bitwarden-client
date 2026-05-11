@@ -175,9 +175,10 @@ func TestRecordPINFailureBackoffAndClearsAtMax(t *testing.T) {
 func TestTokenBundleAndUnlockMaterialCloneAndCloseNoAlias(t *testing.T) {
 	t.Run("TokenBundle clone is independent", func(t *testing.T) {
 		orig := TokenBundle{
-			AccountID:    "acc-1",
-			AccessToken:  []byte("secret-access-token"),
-			RefreshToken: []byte("secret-refresh-token"),
+			AccountID:                "acc-1",
+			AccessToken:              []byte("secret-access-token"),
+			RefreshToken:             []byte("secret-refresh-token"),
+			RememberedTwoFactorToken: []byte("remembered-2fa-token"),
 		}
 
 		clone := orig.Clone()
@@ -185,12 +186,16 @@ func TestTokenBundleAndUnlockMaterialCloneAndCloseNoAlias(t *testing.T) {
 		// Modify the clone's slices — orig should be untouched.
 		clone.AccessToken[0] = 'X'
 		clone.RefreshToken[0] = 'Y'
+		clone.RememberedTwoFactorToken[0] = 'Z'
 
 		if orig.AccessToken[0] != 's' {
 			t.Fatal("Clone did not deep-copy AccessToken")
 		}
 		if orig.RefreshToken[0] != 's' {
 			t.Fatal("Clone did not deep-copy RefreshToken")
+		}
+		if orig.RememberedTwoFactorToken[0] != 'r' {
+			t.Fatal("Clone did not deep-copy RememberedTwoFactorToken")
 		}
 
 		// Ensure non-slice fields are still shared by value (fine).
@@ -202,9 +207,11 @@ func TestTokenBundleAndUnlockMaterialCloneAndCloseNoAlias(t *testing.T) {
 	t.Run("TokenBundle close zeroes backing arrays", func(t *testing.T) {
 		access := []byte("access-token")
 		refresh := []byte("refresh-token")
+		remembered := []byte("remembered-2fa-token")
 		tb := &TokenBundle{
-			AccessToken:  access,
-			RefreshToken: refresh,
+			AccessToken:              access,
+			RefreshToken:             refresh,
+			RememberedTwoFactorToken: remembered,
 		}
 
 		tb.Close()
@@ -220,12 +227,20 @@ func TestTokenBundleAndUnlockMaterialCloneAndCloseNoAlias(t *testing.T) {
 				t.Fatalf("RefreshToken backing[%d] = %d, want 0", i, b)
 			}
 		}
+		for i, b := range remembered {
+			if b != 0 {
+				t.Fatalf("RememberedTwoFactorToken backing[%d] = %d, want 0", i, b)
+			}
+		}
 
 		if tb.AccessToken != nil {
 			t.Fatal("AccessToken should be nil after Close")
 		}
 		if tb.RefreshToken != nil {
 			t.Fatal("RefreshToken should be nil after Close")
+		}
+		if tb.RememberedTwoFactorToken != nil {
+			t.Fatal("RememberedTwoFactorToken should be nil after Close")
 		}
 	})
 
@@ -284,6 +299,9 @@ func TestTokenBundleAndUnlockMaterialCloneAndCloseNoAlias(t *testing.T) {
 		}
 		if tb.RefreshToken != nil {
 			t.Fatal("expected nil RefreshToken")
+		}
+		if tb.RememberedTwoFactorToken != nil {
+			t.Fatal("expected nil RememberedTwoFactorToken")
 		}
 
 		um := UnlockMaterial{}.Clone()

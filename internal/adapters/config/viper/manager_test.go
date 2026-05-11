@@ -77,6 +77,22 @@ func TestSaveThenLoadRoundTrip(t *testing.T) {
 	assert.Equal(t, coreconfig.ColorSchemeLight, loaded.Appearance.ColorScheme)
 }
 
+func TestLoadGeneratesStableDeviceIdentifier(t *testing.T) {
+	mgr, _, cleanup := tempConfig(t)
+	defer cleanup()
+
+	first, err := mgr.Load(context.Background())
+	require.NoError(t, err)
+	require.NotEmpty(t, first.Device.Identifier)
+
+	_, err = os.Stat(mgr.Path())
+	require.NoError(t, err, "Load should persist the generated device identifier")
+
+	second, err := NewManager(mgr.Path()).Load(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, first.Device.Identifier, second.Device.Identifier)
+}
+
 func TestEnvOverride(t *testing.T) {
 	mgr, _, cleanup := tempConfig(t)
 	defer cleanup()

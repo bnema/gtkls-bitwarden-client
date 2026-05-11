@@ -93,17 +93,19 @@ func TestRemoteExportRestoreSessionRoundTrip(t *testing.T) {
 	sdkClient1UserKey := []byte("roundtrip-user-key")
 	sdkClient1Access := []byte("roundtrip-access")
 	sdkClient1Refresh := []byte("roundtrip-refresh")
+	sdkClient1Remembered := []byte("remembered-2fa-token")
 	sdkClient1Expires := time.Now().Add(time.Hour)
 
 	err = sdkClient1.RestoreSession(context.Background(), sdk.SessionMaterial{
 		AccountID: "acct-roundtrip",
 		UserKey:   sdkClient1UserKey,
 		Tokens: sdk.TokenSet{
-			AccountID:    "acct-roundtrip",
-			AccessToken:  sdkClient1Access,
-			RefreshToken: sdkClient1Refresh,
-			TokenType:    "Bearer",
-			ExpiresAt:    sdkClient1Expires,
+			AccountID:                "acct-roundtrip",
+			AccessToken:              sdkClient1Access,
+			RefreshToken:             sdkClient1Refresh,
+			RememberedTwoFactorToken: sdkClient1Remembered,
+			TokenType:                "Bearer",
+			ExpiresAt:                sdkClient1Expires,
 		},
 	})
 	require.NoError(t, err)
@@ -123,6 +125,7 @@ func TestRemoteExportRestoreSessionRoundTrip(t *testing.T) {
 	assert.Equal(t, sdkClient1UserKey, material.UserKey)
 	assert.Equal(t, sdkClient1Access, tokens.AccessToken)
 	assert.Equal(t, sdkClient1Refresh, tokens.RefreshToken)
+	assert.Equal(t, sdkClient1Remembered, tokens.RememberedTwoFactorToken)
 
 	// Restore into a fresh SDK client via the adapter.
 	sdkClient2, err := sdk.NewClient()
@@ -141,6 +144,7 @@ func TestRemoteExportRestoreSessionRoundTrip(t *testing.T) {
 	assert.Equal(t, material.UserKey, material2.UserKey)
 	assert.Equal(t, tokens.AccountID, tokens2.AccountID)
 	assert.Equal(t, tokens.TokenType, tokens2.TokenType)
+	assert.Equal(t, tokens.RememberedTwoFactorToken, tokens2.RememberedTwoFactorToken)
 }
 
 func TestRemoteSessionMethodsNilSDKReturnError(t *testing.T) {
@@ -297,13 +301,14 @@ func TestRefreshTokenBundlePreservesMetadataAndUpdatesTokens(t *testing.T) {
 	adapter := NewFromSDKWithHTTPClient(bareSDK, proxyClient)
 
 	input := coresession.TokenBundle{
-		AccountID:    "account-meta",
-		Email:        "meta@example.com",
-		ServerURL:    "https://vault.bitwarden.com",
-		AccessToken:  []byte("old-access"),
-		RefreshToken: []byte("old-refresh"),
-		TokenType:    "Bearer",
-		ExpiresAt:    time.Now(),
+		AccountID:                "account-meta",
+		Email:                    "meta@example.com",
+		ServerURL:                "https://vault.bitwarden.com",
+		AccessToken:              []byte("old-access"),
+		RefreshToken:             []byte("old-refresh"),
+		RememberedTwoFactorToken: []byte("remembered-2fa"),
+		TokenType:                "Bearer",
+		ExpiresAt:                time.Now(),
 	}
 
 	result, err := adapter.RefreshTokenBundle(context.Background(), input)
@@ -318,6 +323,7 @@ func TestRefreshTokenBundlePreservesMetadataAndUpdatesTokens(t *testing.T) {
 	assert.Equal(t, "https://vault.bitwarden.com", result.ServerURL)
 	assert.Equal(t, "account-meta", result.AccountID)
 	assert.Equal(t, "Bearer", result.TokenType)
+	assert.Equal(t, []byte("remembered-2fa"), result.RememberedTwoFactorToken)
 	// ExpiresAt should be in the future (approx 1h from now).
 	assert.True(t, result.ExpiresAt.After(time.Now()))
 }

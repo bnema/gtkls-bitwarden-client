@@ -278,7 +278,7 @@ func promptTwoFactorCode(cmd *cobra.Command) coreauth.TwoFactorPrompt {
 		if code == "" {
 			return "", "", false, fmt.Errorf("two-factor code is required")
 		}
-		return provider, code, false, ctx.Err()
+		return provider, code, true, ctx.Err()
 	}
 }
 

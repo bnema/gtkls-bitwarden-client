@@ -40,8 +40,9 @@ var (
 
 // Client wraps the Bitwarden Go SDK to implement the out.RemoteVault port.
 type Client struct {
-	sdk        *sdk.Client
-	httpClient *http.Client // optional; used by RefreshTokenBundle when creating refresh sub-clients
+	sdk              *sdk.Client
+	httpClient       *http.Client // optional; used by RefreshTokenBundle when creating refresh sub-clients
+	deviceIdentifier string
 }
 
 // NewClient creates a new adapter Client wrapping the SDK, configured from a
@@ -65,18 +66,18 @@ func NewClient(cfg *coreconfig.Config, opts ...sdk.Option) (*Client, error) {
 		return nil, err
 	}
 
-	return &Client{sdk: sdkClient}, nil
+	return &Client{sdk: sdkClient, deviceIdentifier: effectiveDeviceIdentifier(cfg)}, nil
 }
 
 // NewFromSDK wraps an existing SDK client. Useful for tests and future wiring.
 func NewFromSDK(client *sdk.Client) *Client {
-	return &Client{sdk: client}
+	return &Client{sdk: client, deviceIdentifier: defaultDeviceIdentifier}
 }
 
 // NewFromSDKWithHTTPClient wraps an existing SDK client and sets the HTTP
 // client that RefreshTokenBundle uses when creating refresh sub-clients.
 func NewFromSDKWithHTTPClient(client *sdk.Client, hc *http.Client) *Client {
-	return &Client{sdk: client, httpClient: hc}
+	return &Client{sdk: client, httpClient: hc, deviceIdentifier: defaultDeviceIdentifier}
 }
 
 func remoteLog(ctx context.Context, operation string) zerowrap.Logger {
@@ -184,18 +185,18 @@ func classifySDKError(operation string, err error) error {
 }
 
 // Login authenticates with master password.
-func (c *Client) Login(ctx context.Context, email, password string) (retErr error) {
+func (c *Client) Login(ctx context.Context, email, password string, rememberedTwoFactorToken []byte) (retErr error) {
 	log, started := logRemoteStart(ctx, "login")
 	defer func() { logRemoteFinish(log, started, retErr) }()
-	return c.sdk.Login(ctx, loginOptions(email, password))
+	return c.sdk.Login(ctx, c.loginOptions(email, password, rememberedTwoFactorToken))
 }
 
 // BeginLogin starts login and returns a two-factor challenge when required.
-func (c *Client) BeginLogin(ctx context.Context, email, password string) (challengeResult *coreauth.TwoFactorChallenge, retErr error) {
+func (c *Client) BeginLogin(ctx context.Context, email, password string, rememberedTwoFactorToken []byte) (challengeResult *coreauth.TwoFactorChallenge, retErr error) {
 	log, started := logRemoteStart(ctx, "begin_login")
 	defer func() { logRemoteFinish(log, started, retErr) }()
 
-	result, err := c.sdk.BeginLogin(ctx, loginOptions(email, password))
+	result, err := c.sdk.BeginLogin(ctx, c.loginOptions(email, password, rememberedTwoFactorToken))
 	if err != nil {
 		return nil, err
 	}
@@ -239,13 +240,23 @@ func (c *Client) CompleteTwoFactor(ctx context.Context, _, _ string, _ bool) (re
 	return ErrTwoFactorUnsupported
 }
 
-func loginOptions(email, password string) sdk.LoginOptions {
+const defaultDeviceIdentifier = "gtk4-layershell-bitwarden"
+
+func effectiveDeviceIdentifier(cfg *coreconfig.Config) string {
+	if cfg != nil && strings.TrimSpace(cfg.Device.Identifier) != "" {
+		return strings.TrimSpace(cfg.Device.Identifier)
+	}
+	return defaultDeviceIdentifier
+}
+
+func (c *Client) loginOptions(email, password string, rememberedTwoFactorToken []byte) sdk.LoginOptions {
 	return sdk.LoginOptions{
-		Email:            email,
-		Password:         password,
-		DeviceType:       "LinuxDesktop",
-		DeviceIdentifier: "gtk4-layershell-bitwarden",
-		DeviceName:       "gtk4-layershell-bitwarden",
+		Email:                    email,
+		Password:                 password,
+		DeviceType:               "LinuxDesktop",
+		DeviceIdentifier:         c.deviceIdentifier,
+		DeviceName:               "gtk4-layershell-bitwarden",
+		RememberedTwoFactorToken: rememberedTwoFactorToken,
 	}
 }
 
@@ -451,14 +462,16 @@ func (c *Client) ExportSession(ctx context.Context) (materialResult coresession.
 	copy(material.UserKey, sdkMaterial.UserKey)
 
 	tokens := coresession.TokenBundle{
-		AccountID:    sdkMaterial.Tokens.AccountID,
-		AccessToken:  make([]byte, len(sdkMaterial.Tokens.AccessToken)),
-		RefreshToken: make([]byte, len(sdkMaterial.Tokens.RefreshToken)),
-		TokenType:    sdkMaterial.Tokens.TokenType,
-		ExpiresAt:    sdkMaterial.Tokens.ExpiresAt,
+		AccountID:                sdkMaterial.Tokens.AccountID,
+		AccessToken:              make([]byte, len(sdkMaterial.Tokens.AccessToken)),
+		RefreshToken:             make([]byte, len(sdkMaterial.Tokens.RefreshToken)),
+		RememberedTwoFactorToken: make([]byte, len(sdkMaterial.Tokens.RememberedTwoFactorToken)),
+		TokenType:                sdkMaterial.Tokens.TokenType,
+		ExpiresAt:                sdkMaterial.Tokens.ExpiresAt,
 	}
 	copy(tokens.AccessToken, sdkMaterial.Tokens.AccessToken)
 	copy(tokens.RefreshToken, sdkMaterial.Tokens.RefreshToken)
+	copy(tokens.RememberedTwoFactorToken, sdkMaterial.Tokens.RememberedTwoFactorToken)
 
 	return material, tokens, nil
 }
@@ -479,16 +492,18 @@ func (c *Client) RestoreSession(ctx context.Context, material coresession.Unlock
 		AccountID: tokens.AccountID,
 		UserKey:   make([]byte, len(material.UserKey)),
 		Tokens: sdk.TokenSet{
-			AccountID:    tokens.AccountID,
-			AccessToken:  make([]byte, len(tokens.AccessToken)),
-			RefreshToken: make([]byte, len(tokens.RefreshToken)),
-			TokenType:    tokens.TokenType,
-			ExpiresAt:    tokens.ExpiresAt,
+			AccountID:                tokens.AccountID,
+			AccessToken:              make([]byte, len(tokens.AccessToken)),
+			RefreshToken:             make([]byte, len(tokens.RefreshToken)),
+			RememberedTwoFactorToken: make([]byte, len(tokens.RememberedTwoFactorToken)),
+			TokenType:                tokens.TokenType,
+			ExpiresAt:                tokens.ExpiresAt,
 		},
 	}
 	copy(sdkMaterial.UserKey, material.UserKey)
 	copy(sdkMaterial.Tokens.AccessToken, tokens.AccessToken)
 	copy(sdkMaterial.Tokens.RefreshToken, tokens.RefreshToken)
+	copy(sdkMaterial.Tokens.RememberedTwoFactorToken, tokens.RememberedTwoFactorToken)
 	defer sdkMaterial.Close()
 
 	return c.sdk.RestoreSession(ctx, sdkMaterial)
@@ -578,14 +593,16 @@ func (c *Client) RefreshTokenBundle(ctx context.Context, tokens coresession.Toke
 	}
 
 	toLoad := sdk.TokenSet{
-		AccountID:    tokens.AccountID,
-		AccessToken:  make([]byte, len(tokens.AccessToken)),
-		RefreshToken: make([]byte, len(tokens.RefreshToken)),
-		TokenType:    tokens.TokenType,
-		ExpiresAt:    tokens.ExpiresAt,
+		AccountID:                tokens.AccountID,
+		AccessToken:              make([]byte, len(tokens.AccessToken)),
+		RefreshToken:             make([]byte, len(tokens.RefreshToken)),
+		RememberedTwoFactorToken: make([]byte, len(tokens.RememberedTwoFactorToken)),
+		TokenType:                tokens.TokenType,
+		ExpiresAt:                tokens.ExpiresAt,
 	}
 	copy(toLoad.AccessToken, tokens.AccessToken)
 	copy(toLoad.RefreshToken, tokens.RefreshToken)
+	copy(toLoad.RememberedTwoFactorToken, tokens.RememberedTwoFactorToken)
 
 	store := newRefreshTokenStore(toLoad)
 
@@ -613,16 +630,18 @@ func (c *Client) RefreshTokenBundle(ctx context.Context, tokens coresession.Toke
 	}
 
 	updated := coresession.TokenBundle{
-		AccountID:    result.Tokens.AccountID,
-		Email:        tokens.Email,
-		ServerURL:    tokens.ServerURL,
-		AccessToken:  make([]byte, len(result.Tokens.AccessToken)),
-		RefreshToken: make([]byte, len(result.Tokens.RefreshToken)),
-		TokenType:    result.Tokens.TokenType,
-		ExpiresAt:    result.Tokens.ExpiresAt,
+		AccountID:                result.Tokens.AccountID,
+		Email:                    tokens.Email,
+		ServerURL:                tokens.ServerURL,
+		AccessToken:              make([]byte, len(result.Tokens.AccessToken)),
+		RefreshToken:             make([]byte, len(result.Tokens.RefreshToken)),
+		RememberedTwoFactorToken: make([]byte, len(result.Tokens.RememberedTwoFactorToken)),
+		TokenType:                result.Tokens.TokenType,
+		ExpiresAt:                result.Tokens.ExpiresAt,
 	}
 	copy(updated.AccessToken, result.Tokens.AccessToken)
 	copy(updated.RefreshToken, result.Tokens.RefreshToken)
+	copy(updated.RememberedTwoFactorToken, result.Tokens.RememberedTwoFactorToken)
 
 	return updated, nil
 }

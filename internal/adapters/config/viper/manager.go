@@ -2,6 +2,7 @@ package viper
 
 import (
 	"context"
+	crand "crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -51,6 +52,7 @@ func (m *Manager) setDefaults(v *viper.Viper) {
 	v.SetDefault("bitwarden.email", def.Bitwarden.Email)
 	v.SetDefault("bitwarden.region", string(def.Bitwarden.Region))
 	v.SetDefault("bitwarden.server_url", def.Bitwarden.ServerURL)
+	v.SetDefault("device.identifier", def.Device.Identifier)
 
 	v.SetDefault("sync.revision_check_interval", def.Sync.RevisionCheckInterval.String())
 
@@ -80,6 +82,7 @@ func (m *Manager) decodeConfig(v *viper.Viper) *coreconfig.Config {
 		cfg.Bitwarden.Region = coreconfig.Region(r)
 	}
 	cfg.Bitwarden.ServerURL = v.GetString("bitwarden.server_url")
+	cfg.Device.Identifier = v.GetString("device.identifier")
 
 	// Sync
 	if d := v.GetDuration("sync.revision_check_interval"); d > 0 {
@@ -132,6 +135,9 @@ func configToMap(cfg *coreconfig.Config) map[string]any {
 			"email":      cfg.Bitwarden.Email,
 			"region":     string(cfg.Bitwarden.Region),
 			"server_url": cfg.Bitwarden.ServerURL,
+		},
+		"device": map[string]any{
+			"identifier": cfg.Device.Identifier,
 		},
 		"sync": map[string]any{
 			"revision_check_interval": cfg.Sync.RevisionCheckInterval.String(),
@@ -203,12 +209,24 @@ func (m *Manager) Load(ctx context.Context) (*coreconfig.Config, error) {
 					break
 				}
 			}
-			if onlyEmail {
-				m.cfg = cfg
-				return cfg, nil
+			if !onlyEmail {
+				return nil, fmt.Errorf("config validation: %w", err)
 			}
+		} else {
+			return nil, fmt.Errorf("config validation: %w", err)
 		}
-		return nil, fmt.Errorf("config validation: %w", err)
+	}
+
+	if cfg.Device.Identifier == "" {
+		identifier, genErr := generateDeviceIdentifier()
+		if genErr != nil {
+			return nil, genErr
+		}
+		cfg.Device.Identifier = identifier
+		if saveErr := m.saveLocked(ctx, cfg); saveErr != nil {
+			return nil, saveErr
+		}
+		return cfg, nil
 	}
 
 	m.cfg = cfg
@@ -223,7 +241,10 @@ func (m *Manager) Save(ctx context.Context, cfg *coreconfig.Config) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.saveLocked(ctx, cfg)
+}
 
+func (m *Manager) saveLocked(ctx context.Context, cfg *coreconfig.Config) error {
 	// Build a nested map with snake_case keys and marshal to TOML
 	data, err := toml.Marshal(configToMap(cfg))
 	if err != nil {
@@ -236,6 +257,16 @@ func (m *Manager) Save(ctx context.Context, cfg *coreconfig.Config) error {
 
 	m.cfg = cfg
 	return nil
+}
+
+func generateDeviceIdentifier() (string, error) {
+	var raw [16]byte
+	if _, err := crand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate device identifier: %w", err)
+	}
+	raw[6] = (raw[6] & 0x0f) | 0x40
+	raw[8] = (raw[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16]), nil
 }
 
 // Watch installs a Viper file watcher. The onChange callback is invoked

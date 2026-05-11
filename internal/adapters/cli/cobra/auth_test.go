@@ -29,6 +29,7 @@ type fakeAuthService struct {
 	pin                 string
 	requireTwoFactor    bool
 	twoFactorCode       string
+	twoFactorRemember   bool
 	events              chan in.Event
 	authStatus          session.AuthStatus
 	authStatusErr       error
@@ -46,11 +47,12 @@ func (f *fakeAuthService) Login(_ context.Context, input coreauth.LoginInput) er
 	f.password = input.Password
 	f.pin = input.PIN
 	if f.requireTwoFactor && input.TwoFactorPrompt != nil {
-		_, code, _, err := input.TwoFactorPrompt(context.Background(), []coreauth.TwoFactorProvider{coreauth.TwoFactorProviderAuthenticator})
+		_, code, remember, err := input.TwoFactorPrompt(context.Background(), []coreauth.TwoFactorProvider{coreauth.TwoFactorProviderAuthenticator})
 		if err != nil {
 			return err
 		}
 		f.twoFactorCode = code
+		f.twoFactorRemember = remember
 	}
 	if f.loginErr != nil {
 		return f.loginErr
@@ -64,11 +66,12 @@ func (f *fakeAuthService) Unlock(_ context.Context, email, password string) erro
 }
 func (f *fakeAuthService) UnlockWithTwoFactor(ctx context.Context, email, password string, prompt coreauth.TwoFactorPrompt) error {
 	if f.requireTwoFactor && prompt != nil {
-		_, code, _, err := prompt(ctx, []coreauth.TwoFactorProvider{coreauth.TwoFactorProviderAuthenticator})
+		_, code, remember, err := prompt(ctx, []coreauth.TwoFactorProvider{coreauth.TwoFactorProviderAuthenticator})
 		if err != nil {
 			return err
 		}
 		f.twoFactorCode = code
+		f.twoFactorRemember = remember
 	}
 	return f.Unlock(ctx, email, password)
 }
@@ -236,6 +239,7 @@ func TestLoginPromptsForAuthenticatorCode(t *testing.T) {
 
 	require.NoError(t, root.ExecuteContext(context.Background()))
 	require.Equal(t, "123456", fake.twoFactorCode)
+	require.True(t, fake.twoFactorRemember, "login should implicitly remember the device after successful 2FA")
 	require.Equal(t, "9999", fake.pin)
 	require.Equal(t, "me@example.com", fake.email)
 	require.Equal(t, "master-password", fake.password)

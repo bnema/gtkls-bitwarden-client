@@ -957,7 +957,7 @@ func (v *View) overlayTwoFactorPrompt() auth.TwoFactorPrompt {
 			})
 			return "", "", false, ctx.Err()
 		case response := <-prompt.response:
-			return response.provider, response.code, false, response.err
+			return response.provider, response.code, true, response.err
 		}
 	}
 }

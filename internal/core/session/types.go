@@ -10,14 +10,15 @@ type AccountRef struct {
 
 // TokenBundle holds OAuth tokens and associated metadata.
 type TokenBundle struct {
-	AccountID    string    `json:"accountId"`
-	Email        string    `json:"email"`
-	ServerURL    string    `json:"serverUrl"`
-	AccessToken  []byte    `json:"accessToken"`
-	RefreshToken []byte    `json:"refreshToken"`
-	TokenType    string    `json:"tokenType"`
-	ExpiresAt    time.Time `json:"expiresAt"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+	AccountID                string    `json:"accountId"`
+	Email                    string    `json:"email"`
+	ServerURL                string    `json:"serverUrl"`
+	AccessToken              []byte    `json:"accessToken"`
+	RefreshToken             []byte    `json:"refreshToken"`
+	RememberedTwoFactorToken []byte    `json:"rememberedTwoFactorToken"`
+	TokenType                string    `json:"tokenType"`
+	ExpiresAt                time.Time `json:"expiresAt"`
+	UpdatedAt                time.Time `json:"updatedAt"`
 }
 
 // Clone returns a deep copy of the TokenBundle.
@@ -31,6 +32,10 @@ func (tb TokenBundle) Clone() TokenBundle {
 		c.RefreshToken = make([]byte, len(tb.RefreshToken))
 		copy(c.RefreshToken, tb.RefreshToken)
 	}
+	if tb.RememberedTwoFactorToken != nil {
+		c.RememberedTwoFactorToken = make([]byte, len(tb.RememberedTwoFactorToken))
+		copy(c.RememberedTwoFactorToken, tb.RememberedTwoFactorToken)
+	}
 	return c
 }
 
@@ -38,8 +43,10 @@ func (tb TokenBundle) Clone() TokenBundle {
 func (tb *TokenBundle) Close() {
 	clear(tb.AccessToken)
 	clear(tb.RefreshToken)
+	clear(tb.RememberedTwoFactorToken)
 	tb.AccessToken = nil
 	tb.RefreshToken = nil
+	tb.RememberedTwoFactorToken = nil
 }
 
 // UnlockMaterial holds sensitive key material for unlocking the vault.

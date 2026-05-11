@@ -33,6 +33,7 @@ const (
 
 type Config struct {
 	Bitwarden  Bitwarden
+	Device     Device
 	Sync       Sync
 	Security   Security
 	Actions    Actions
@@ -44,6 +45,10 @@ type Bitwarden struct {
 	Email     string
 	Region    Region
 	ServerURL string
+}
+
+type Device struct {
+	Identifier string
 }
 
 type Sync struct {
@@ -91,6 +96,7 @@ func Default() *Config {
 		Bitwarden: Bitwarden{
 			Region: RegionUS,
 		},
+		Device: Device{},
 		Sync: Sync{
 			RevisionCheckInterval: 5 * time.Minute,
 		},

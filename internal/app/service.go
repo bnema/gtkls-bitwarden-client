@@ -798,8 +798,11 @@ func (s *Service) unlock(ctx context.Context, email, password string, prompt aut
 
 	// Login via remote if configured.
 	if s.deps.Remote != nil {
+		rememberedTwoFactorToken := s.loadRememberedTwoFactorToken(ctx, email)
+		defer clear(rememberedTwoFactorToken)
+
 		if prompt != nil {
-			challenge, err := s.deps.Remote.BeginLogin(ctx, email, password)
+			challenge, err := s.deps.Remote.BeginLogin(ctx, email, password, rememberedTwoFactorToken)
 			if err != nil {
 				s.mu.Lock()
 				s.state = auth.LockStateLocked
@@ -822,7 +825,7 @@ func (s *Service) unlock(ctx context.Context, email, password string, prompt aut
 					return fmt.Errorf("app: two-factor login failed: %w", err)
 				}
 			}
-		} else if err := s.deps.Remote.Login(ctx, email, password); err != nil {
+		} else if err := s.deps.Remote.Login(ctx, email, password, rememberedTwoFactorToken); err != nil {
 			s.mu.Lock()
 			s.state = auth.LockStateLocked
 			s.mu.Unlock()
@@ -1588,6 +1591,23 @@ func (s *Service) accountRef(email string) session.AccountRef {
 	}
 }
 
+func (s *Service) loadRememberedTwoFactorToken(ctx context.Context, email string) []byte {
+	if s.deps.Credentials == nil {
+		return nil
+	}
+	bundle, err := s.deps.Credentials.LoadTokenBundle(ctx, s.accountRef(email))
+	if err != nil {
+		return nil
+	}
+	defer bundle.Close()
+	if len(bundle.RememberedTwoFactorToken) == 0 {
+		return nil
+	}
+	remembered := make([]byte, len(bundle.RememberedTwoFactorToken))
+	copy(remembered, bundle.RememberedTwoFactorToken)
+	return remembered
+}
+
 // effectiveServerURL returns the current effective server URL based on config.
 // Unexported for now; tests exercise it through accountRef and AuthStatus.
 func (s *Service) effectiveServerURL() string {
@@ -1656,6 +1676,10 @@ func (s *Service) ensureFreshTokens(ctx context.Context, ref session.AccountRef)
 	// Preserve metadata from the original bundle.
 	updated.Email = bundle.Email
 	updated.ServerURL = bundle.ServerURL
+	if len(updated.RememberedTwoFactorToken) == 0 && len(bundle.RememberedTwoFactorToken) > 0 {
+		updated.RememberedTwoFactorToken = make([]byte, len(bundle.RememberedTwoFactorToken))
+		copy(updated.RememberedTwoFactorToken, bundle.RememberedTwoFactorToken)
+	}
 	updated.UpdatedAt = s.now()
 
 	if saveErr := s.deps.Credentials.SaveTokenBundle(ctx, ref, updated); saveErr != nil {

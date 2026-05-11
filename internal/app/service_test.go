@@ -91,10 +91,12 @@ type fakeRemote struct {
 	deleteErr error
 
 	// Configurable two-factor login
-	beginChallenge   *auth.TwoFactorChallenge
-	beginCalled      bool
-	completeProvider auth.TwoFactorProvider
-	completeCode     string
+	beginChallenge           *auth.TwoFactorChallenge
+	beginCalled              bool
+	beginRememberedTwoFactor []byte
+	loginRememberedTwoFactor []byte
+	completeProvider         auth.TwoFactorProvider
+	completeCode             string
 
 	// Override hooks (for testing lifecycle)
 	onLogin      func(ctx context.Context, email, password string) error
@@ -122,7 +124,7 @@ type fakeRemote struct {
 	restoreSessionErr error
 }
 
-func (r *fakeRemote) Login(ctx context.Context, email, password string) error {
+func (r *fakeRemote) Login(ctx context.Context, email, password string, rememberedTwoFactorToken []byte) error {
 	r.mu.Lock()
 	onLogin := r.onLogin
 	enterCh := r.loginEnterCh
@@ -142,17 +144,19 @@ func (r *fakeRemote) Login(ctx context.Context, email, password string) error {
 
 	r.mu.Lock()
 	r.loginCalled = true
+	r.loginRememberedTwoFactor = append([]byte(nil), rememberedTwoFactorToken...)
 	r.mu.Unlock()
 	return nil
 }
 
-func (r *fakeRemote) BeginLogin(ctx context.Context, email, password string) (*auth.TwoFactorChallenge, error) {
-	if err := r.Login(ctx, email, password); err != nil {
+func (r *fakeRemote) BeginLogin(ctx context.Context, email, password string, rememberedTwoFactorToken []byte) (*auth.TwoFactorChallenge, error) {
+	if err := r.Login(ctx, email, password, rememberedTwoFactorToken); err != nil {
 		return nil, err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.beginCalled = true
+	r.beginRememberedTwoFactor = append([]byte(nil), rememberedTwoFactorToken...)
 	return r.beginChallenge, nil
 }
 
@@ -437,10 +441,11 @@ func (cs *fakeCredentialStore) SaveTokenBundle(_ context.Context, _ session.Acco
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	cs.saveTokenCalled++
-	cs.savedTokenBundle = bundle
+	cs.savedTokenBundle = bundle.Clone()
 	if cs.saveTokenErr != nil {
 		return cs.saveTokenErr
 	}
+	cs.tokenBundle = bundle.Clone()
 	return nil
 }
 
@@ -448,7 +453,7 @@ func (cs *fakeCredentialStore) LoadTokenBundle(_ context.Context, _ session.Acco
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	cs.loadTokenCalls++
-	return cs.tokenBundle, cs.loadTokenErr
+	return cs.tokenBundle.Clone(), cs.loadTokenErr
 }
 
 func (cs *fakeCredentialStore) DeleteTokenBundle(_ context.Context, _ session.AccountRef) error {
@@ -2328,13 +2333,14 @@ func TestEnsureFreshTokensRefreshesAndSavesNearExpiry(t *testing.T) {
 
 	// Token expires in 1 minute (less than 2 minutes).
 	nearExpiryBundle := session.TokenBundle{
-		AccountID:    "acct-1",
-		Email:        ref.Email,
-		ServerURL:    ref.ServerURL,
-		AccessToken:  []byte("old-at"),
-		RefreshToken: []byte("old-rt"),
-		TokenType:    "Bearer",
-		ExpiresAt:    time.Now().Add(time.Minute),
+		AccountID:                "acct-1",
+		Email:                    ref.Email,
+		ServerURL:                ref.ServerURL,
+		AccessToken:              []byte("old-at"),
+		RefreshToken:             []byte("old-rt"),
+		RememberedTwoFactorToken: []byte("remembered-2fa"),
+		TokenType:                "Bearer",
+		ExpiresAt:                time.Now().Add(time.Minute),
 	}
 
 	updatedBundle := session.TokenBundle{
@@ -2364,6 +2370,7 @@ func TestEnsureFreshTokensRefreshesAndSavesNearExpiry(t *testing.T) {
 	// Metadata (Email, ServerURL) should be preserved from original.
 	require.Equal(t, ref.Email, result.Email)
 	require.Equal(t, ref.ServerURL, result.ServerURL)
+	require.Equal(t, []byte("remembered-2fa"), result.RememberedTwoFactorToken)
 
 	// Remote should have been called once.
 	require.Equal(t, int32(1), fr.refreshTokenBundleCallCnt.Load())
@@ -2372,6 +2379,7 @@ func TestEnsureFreshTokensRefreshesAndSavesNearExpiry(t *testing.T) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	require.Equal(t, 1, cs.saveTokenCalled)
+	require.Equal(t, []byte("remembered-2fa"), cs.savedTokenBundle.RememberedTwoFactorToken)
 }
 
 func TestEnsureFreshTokensDeletesInvalidRefreshToken(t *testing.T) {
@@ -2645,6 +2653,95 @@ func TestLoginRequiresPINBeforeRemoteLogin(t *testing.T) {
 	fr.mu.Lock()
 	require.False(t, fr.loginCalled)
 	fr.mu.Unlock()
+}
+
+func TestLoginUsesStoredRememberedTwoFactorTokenBeforePrompting(t *testing.T) {
+	email := "user@example.com"
+	storedRemembered := []byte("remembered-2fa")
+	fr := &fakeRemote{
+		exportMaterial: session.UnlockMaterial{UserKey: []byte("user-key")},
+		exportTokens: session.TokenBundle{
+			AccountID:    "acct-1",
+			AccessToken:  []byte("access-token"),
+			RefreshToken: []byte("refresh-token"),
+			TokenType:    "Bearer",
+			ExpiresAt:    time.Now().Add(time.Hour),
+		},
+	}
+	cs := &fakeCredentialStore{tokenBundle: session.TokenBundle{RememberedTwoFactorToken: storedRemembered}}
+	pe := &fakePINEnvelope{result: session.UnlockEnvelope{Version: session.UnlockEnvelopeVersion, Salt: []byte("salt")}}
+	boot := &fakeBootID{id: "boot-remembered"}
+	fakCache := &fakeCache{loadErr: os.ErrNotExist}
+
+	svc := NewService(Deps{
+		Remote:      fr,
+		Cache:       fakCache,
+		SecretBox:   &fakeSecretBox{},
+		Credentials: cs,
+		BootID:      boot,
+		PINEnvelope: pe,
+		Config:      coreconfig.Default(),
+	})
+
+	input := auth.LoginInput{
+		Email:    email,
+		Password: "master-password",
+		PIN:      "1234",
+		TwoFactorPrompt: func(context.Context, []auth.TwoFactorProvider) (auth.TwoFactorProvider, string, bool, error) {
+			t.Fatal("two-factor prompt should not be called when remembered login succeeds")
+			return "", "", false, nil
+		},
+	}
+
+	require.NoError(t, svc.Login(context.Background(), input))
+	require.Equal(t, storedRemembered, fr.beginRememberedTwoFactor)
+}
+
+func TestLoginFallsBackToPromptWhenRememberedTwoFactorNeedsFreshCode(t *testing.T) {
+	email := "user@example.com"
+	storedRemembered := []byte("expired-remembered-2fa")
+	fr := &fakeRemote{
+		beginChallenge: auth.NewTwoFactorChallenge([]auth.TwoFactorProvider{auth.TwoFactorProviderAuthenticator}, nil, nil),
+		exportMaterial: session.UnlockMaterial{UserKey: []byte("user-key")},
+		exportTokens: session.TokenBundle{
+			AccountID:    "acct-1",
+			AccessToken:  []byte("access-token"),
+			RefreshToken: []byte("refresh-token"),
+			TokenType:    "Bearer",
+			ExpiresAt:    time.Now().Add(time.Hour),
+		},
+	}
+	cs := &fakeCredentialStore{tokenBundle: session.TokenBundle{RememberedTwoFactorToken: storedRemembered}}
+	pe := &fakePINEnvelope{result: session.UnlockEnvelope{Version: session.UnlockEnvelopeVersion, Salt: []byte("salt")}}
+	boot := &fakeBootID{id: "boot-fallback"}
+	fakCache := &fakeCache{loadErr: os.ErrNotExist}
+
+	svc := NewService(Deps{
+		Remote:      fr,
+		Cache:       fakCache,
+		SecretBox:   &fakeSecretBox{},
+		Credentials: cs,
+		BootID:      boot,
+		PINEnvelope: pe,
+		Config:      coreconfig.Default(),
+	})
+
+	promptCalls := 0
+	input := auth.LoginInput{
+		Email:    email,
+		Password: "master-password",
+		PIN:      "1234",
+		TwoFactorPrompt: func(context.Context, []auth.TwoFactorProvider) (auth.TwoFactorProvider, string, bool, error) {
+			promptCalls++
+			return auth.TwoFactorProviderAuthenticator, "123456", true, nil
+		},
+	}
+
+	require.NoError(t, svc.Login(context.Background(), input))
+	require.Equal(t, 1, promptCalls)
+	require.Equal(t, storedRemembered, fr.beginRememberedTwoFactor)
+	require.Equal(t, auth.TwoFactorProviderAuthenticator, fr.completeProvider)
+	require.Equal(t, "123456", fr.completeCode)
 }
 
 // ---------------------------------------------------------------------------

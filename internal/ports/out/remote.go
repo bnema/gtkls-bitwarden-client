@@ -14,8 +14,8 @@ import (
 
 // RemoteVault abstracts the Bitwarden remote API. No SDK types leak.
 type RemoteVault interface {
-	Login(ctx context.Context, email, password string) error
-	BeginLogin(ctx context.Context, email, password string) (*auth.TwoFactorChallenge, error)
+	Login(ctx context.Context, email, password string, rememberedTwoFactorToken []byte) error
+	BeginLogin(ctx context.Context, email, password string, rememberedTwoFactorToken []byte) (*auth.TwoFactorChallenge, error)
 	CompleteTwoFactorLogin(ctx context.Context, challenge *auth.TwoFactorChallenge, provider auth.TwoFactorProvider, code string, remember bool) error
 	CompleteTwoFactor(ctx context.Context, provider, code string, remember bool) error
 	Lock(ctx context.Context) error

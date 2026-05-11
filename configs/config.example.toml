@@ -12,6 +12,9 @@
 # region = "us"                          # "us", "eu", or "self_hosted"
 # server_url = ""                        # required when region = "self_hosted"
 
+[device]
+# identifier = ""                        # auto-generated stable identifier for this installation
+
 [sync]
 # revision_check_interval = "5m"         # how often to check remote revision
 
