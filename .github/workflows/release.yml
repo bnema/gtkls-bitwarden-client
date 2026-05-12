@@ -17,6 +17,11 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ github.ref }}
+
+      - name: Fetch tags
+        run: git fetch --force --tags
 
       - name: Setup Go
         uses: actions/setup-go@v6
