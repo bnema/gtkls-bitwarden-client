@@ -2,17 +2,37 @@ name: Release
 
 on:
   push:
-    tags: ['v*']
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
 
 jobs:
   release:
-    permissions:
-      contents: write
-    uses: bnema/gh-actions/.github/workflows/go-release.yml@0df6881622f94d8e82a0b7bd62cf52e2215f80d6
-    with:
-      go-version: stable
-      pre-command: |
-        go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-        make check
-    secrets:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    name: Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+
+      - name: Verify
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+          make check
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
