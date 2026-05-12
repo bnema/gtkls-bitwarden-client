@@ -40,5 +40,3 @@ changelog:
 release:
   prerelease: auto
 
-git:
-  tag_sort: smartsemver
