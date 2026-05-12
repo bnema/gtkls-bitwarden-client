@@ -21,7 +21,9 @@ jobs:
           ref: ${{ github.ref }}
 
       - name: Fetch tags
-        run: git fetch --force --tags
+        run: |
+          git fetch --force origin '+refs/tags/*:refs/tags/*'
+          git tag --list
 
       - name: Setup Go
         uses: actions/setup-go@v6
