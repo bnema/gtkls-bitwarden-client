@@ -597,6 +597,10 @@ func TestLogoutDeletesCredentialsAndCacheOutbox(t *testing.T) {
 	// Cache and outbox files should be removed.
 	assert.NoFileExists(t, cachePath, "cache file should be removed")
 	assert.NoFileExists(t, outboxPath, "outbox file should be removed")
+
+	out, err := executeCmd(t, Options{ConfigPath: configPath}, []string{"config", "get", "bitwarden.email"})
+	require.NoError(t, err)
+	assert.Equal(t, "\n", out, "logout should clear configured email so the next login prompts for it")
 }
 
 func TestLogoutNoEmailStillClearsCacheAndOutbox(t *testing.T) {

@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.golangci.yml'
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.golangci.yml'
+      - '.github/workflows/**'
+
+jobs:
+  ci:
+    uses: bnema/gh-actions/.github/workflows/go-ci.yml@0df6881622f94d8e82a0b7bd62cf52e2215f80d6
+    with:
+      go-version: stable
+      test-command: make test
+      lint-command: make safety

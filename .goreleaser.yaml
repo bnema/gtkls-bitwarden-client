@@ -1,0 +1,44 @@
+version: 2
+
+project_name: gtk4-layershell-bitwarden
+
+builds:
+  - id: gtk4-layershell-bitwarden
+    main: ./cmd/gtk4-layershell-bitwarden
+    binary: gtk4-layershell-bitwarden
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: linux
+    ids:
+      - gtk4-layershell-bitwarden
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+
+release:
+  prerelease: auto
+
+git:
+  tag_sort: smartsemver

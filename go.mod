@@ -2,10 +2,8 @@ module github.com/bnema/gtk4-layershell-bitwarden
 
 go 1.26.1
 
-replace github.com/bnema/bitwarden-go-sdk => ../bitwarden-go-sdk
-
 require (
-	github.com/bnema/bitwarden-go-sdk v0.1.0
+	github.com/bnema/bitwarden-go-sdk v0.3.0
 	github.com/bnema/puregotk v0.5.1
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/pelletier/go-toml/v2 v2.3.0

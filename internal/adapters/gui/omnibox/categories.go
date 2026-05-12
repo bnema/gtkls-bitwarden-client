@@ -54,8 +54,8 @@ func searchCategoryShortcut(number int) (itemCategory, bool) {
 }
 
 func formCategoryShortcut(number int) (itemCategory, bool) {
-	// Add mode intentionally mirrors sekeve's visible tabs: there is no "All"
-	// category when creating an item, so Ctrl+1 starts at Login.
+	// Add mode has no "All" category when creating an item, so Ctrl+1 starts
+	// at Login.
 	switch number {
 	case 1:
 		return categoryLogin, true

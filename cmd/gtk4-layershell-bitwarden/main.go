@@ -22,7 +22,7 @@ func main() {
 func run(args []string, stdout, stderr io.Writer) int {
 	ctx, cleanup, meta, err := adapterlogging.NewContextFromEnv(context.Background(), version)
 	if err != nil {
-		fmt.Fprintf(stderr, "error: initialize logging: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: initialize logging: %v\n", err)
 		return 1
 	}
 	defer cleanup()
@@ -46,7 +46,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		log.Error().
 			Str("error_kind", corelogging.SafeErrorKind(err)).
 			Msg("command failed")
-		fmt.Fprintf(stderr, "error: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
 	return 0
