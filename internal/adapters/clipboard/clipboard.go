@@ -3,11 +3,14 @@ package clipboard
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/out"
 )
+
+var ErrClipboardUnavailable = errors.New("clipboard: no clipboard backend available")
 
 // Setter is a function that sets the clipboard text.
 type Setter func(string) error

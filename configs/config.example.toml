@@ -13,7 +13,7 @@
 # server_url = ""                        # required when region = "self_hosted"
 
 [device]
-# identifier = ""                        # auto-generated stable identifier for this installation
+# identifier = ""                        # local Bitwarden device identity; auto-generated when blank, not telemetry
 
 [sync]
 # revision_check_interval = "5m"         # how often to check remote revision
@@ -28,7 +28,7 @@
 # retry_timeout = "30s"                  # back-off between retries
 
 [actions]
-# clipboard_clear_after = "45s"          # auto-clear clipboard after copy
+# clipboard_clear_after = "45s"          # auto-clear clipboard after wired clipboard copy actions
 # close_after_copy = true                # close overlay after copy
 # default_primary_action = "copy_password"  # "copy_password", "copy_username", "open_url", "open_detail"
 

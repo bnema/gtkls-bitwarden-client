@@ -1144,9 +1144,10 @@ func (s *Service) HardLock(ctx context.Context, email string) (retErr error) {
 }
 
 // Search searches vault items by query. Returns ErrLocked if not unlocked.
-// Items are loaded from the encrypted cache when available, or from resident
-// state as a fallback. A local search index is built for the query and
-// discarded afterward; no resident index is consulted or modified.
+// Resident unlocked state is authoritative when present; cache-backed sessions
+// (for example PIN unlock) fall back to the encrypted cache when resident
+// plaintext is intentionally absent. A local search index is built for the
+// query and discarded afterward; no resident index is consulted or modified.
 func (s *Service) Search(ctx context.Context, query string, limit int) ([]vault.ScoredItem, error) {
 	s.mu.Lock()
 	if s.state != auth.LockStateUnlocked {
@@ -1160,14 +1161,11 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]vault.
 	copy(residentItems, s.items)
 	s.mu.Unlock()
 
-	var items []vault.Item
-	if len(cacheKey) > 0 {
+	items := residentItems
+	if len(items) == 0 && len(cacheKey) > 0 {
 		if loaded, _, _, err := s.loadCachedVaultWithKey(ctx, cacheKey); err == nil && len(loaded) > 0 {
 			items = loaded
 		}
-	}
-	if items == nil {
-		items = residentItems
 	}
 
 	if len(items) == 0 {
@@ -1180,8 +1178,9 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]vault.
 }
 
 // Items returns a copy of all vault items. Returns ErrLocked if not unlocked.
-// Items are loaded from the encrypted cache when available, or from resident
-// state as a fallback.
+// Resident unlocked state is authoritative when present; cache-backed sessions
+// fall back to the encrypted cache when resident plaintext is intentionally
+// absent.
 func (s *Service) Items(ctx context.Context) ([]vault.Item, error) {
 	s.mu.Lock()
 	if s.state != auth.LockStateUnlocked {
@@ -1195,14 +1194,11 @@ func (s *Service) Items(ctx context.Context) ([]vault.Item, error) {
 	copy(residentItems, s.items)
 	s.mu.Unlock()
 
-	var items []vault.Item
-	if len(cacheKey) > 0 {
+	items := residentItems
+	if len(items) == 0 && len(cacheKey) > 0 {
 		if loaded, _, _, err := s.loadCachedVaultWithKey(ctx, cacheKey); err == nil && len(loaded) > 0 {
 			items = loaded
 		}
-	}
-	if items == nil {
-		items = residentItems
 	}
 
 	result := make([]vault.Item, len(items))
@@ -1210,9 +1206,10 @@ func (s *Service) Items(ctx context.Context) ([]vault.Item, error) {
 	return result, nil
 }
 
-// Get returns a single vault item by ID. Items are loaded from the encrypted
-// cache when available, or from resident state as a fallback. Returns
-// ErrNotFound when the item is not found.
+// Get returns a single vault item by ID. Resident unlocked state is
+// authoritative when present; cache-backed sessions fall back to the encrypted
+// cache when resident plaintext is intentionally absent. Returns ErrNotFound
+// when the item is not found.
 func (s *Service) Get(ctx context.Context, id string) (vault.Item, error) {
 	s.mu.Lock()
 	if s.state != auth.LockStateUnlocked {
@@ -1226,14 +1223,11 @@ func (s *Service) Get(ctx context.Context, id string) (vault.Item, error) {
 	copy(residentItems, s.items)
 	s.mu.Unlock()
 
-	var items []vault.Item
-	if len(cacheKey) > 0 {
+	items := residentItems
+	if len(items) == 0 && len(cacheKey) > 0 {
 		if loaded, _, _, err := s.loadCachedVaultWithKey(ctx, cacheKey); err == nil && len(loaded) > 0 {
 			items = loaded
 		}
-	}
-	if items == nil {
-		items = residentItems
 	}
 
 	for _, item := range items {

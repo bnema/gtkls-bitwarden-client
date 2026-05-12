@@ -1,89 +1,72 @@
 # gtk4-layershell-bitwarden
 
-A **overlay-only** GTK4 layer-shell Bitwarden client for Linux desktop
-environments using the wlr-layer-shell protocol.
+A keyboard-driven GTK4 layer-shell Bitwarden client for Linux Wayland desktops.
 
-The application runs as a keyboard-driven overlay over your compositor — it
-does **not** open a regular window. It is designed for quick vault search,
-copy, and edit workflows without leaving your current workspace.
-
----
+The app runs as an overlay over your compositor instead of a regular window. It is built for fast vault search, copy-oriented workflows, and lightweight item editing without leaving the current workspace.
 
 ## Status
 
-**v0.1.0 — daily-usable goal, local development branch**
+**v0.1.0 — early public release**
 
-This version targets daily-usable functionality but lives on the
-`feat/v0.1.0` branch for local testing. It is not yet tagged for general
-consumption. Expect rough edges and breaking changes as the API stabilises.
-
----
-
-## Local SDK Replacement
-
-The project depends on a local fork of the Bitwarden Go SDK, resolved via
-a `replace` directive in `go.mod`:
-
-```
-replace github.com/bnema/bitwarden-go-sdk => ../bitwarden-go-sdk
-```
-
-The SDK repository at `../bitwarden-go-sdk` is expected to carry tag `v0.1.0`.
-If you clone the repositories side by side, no manual `replace` change is
-needed.
-
----
+This release is intended for Linux desktop users who are comfortable with early software. The core login, quick unlock, encrypted cache, search, and item edit flows are usable, but some UI workflows are still incomplete. Expect breaking changes before a stable v1.0 release.
 
 ## Build / Install Requirements
 
 | Dependency | Version / Notes |
 |---|---|
 | **Go** | `1.26.1` or later |
-| **GTK4** | Development headers (`libgtk-4-dev` or equivalent) |
-| **gtk4-layer-shell** | Development headers |
-| **Compositor** | Wayland compositor with `wlr-layer-shell` support (e.g. Sway, Hyprland) |
+| **GTK4** | Runtime libraries for GTK4 |
+| **gtk4-layer-shell** | Runtime library providing `libgtk4-layer-shell.so.0` |
+| **Compositor** | Wayland compositor with `wlr-layer-shell` support, such as Sway or Hyprland |
+| **Secret Service** | Linux Secret Service keyring, such as GNOME Keyring or KWallet |
 
-### Headless builds
+Build from source:
 
-Unit tests and code that does not depend on GTK can be compiled and run
-without a display server by passing the `nogtk` build tag:
-
+```sh
+git clone https://github.com/bnema/gtk4-layershell-bitwarden.git
+cd gtk4-layershell-bitwarden
+make build
+./dist/gtk4-layershell-bitwarden --version
 ```
+
+Install with Go once the repository is published and tagged:
+
+```sh
+go install github.com/bnema/gtk4-layershell-bitwarden/cmd/gtk4-layershell-bitwarden@v0.1.0
+```
+
+Headless tests and non-GTK code can be built with the `nogtk` build tag:
+
+```sh
 go test -tags nogtk ./...
 ```
 
-This excludes the GTK/layer-shell GUI adapter from compilation.
-
----
-
 ## First Run / Config
 
-On first run the application looks for a configuration file at:
+The default config path is:
 
-```
+```sh
 ~/.config/gtk4-layershell-bitwarden/config.toml
 ```
 
-(`$XDG_CONFIG_HOME` is respected if set; falls back to `os.UserConfigDir()`
-and finally to `./gtk4-layershell-bitwarden/config.toml` as a last resort.)
+`$XDG_CONFIG_HOME` is respected. A missing config file is not an error; built-in defaults are used and the config can be written later through the CLI or GUI.
 
-Start by copying the example config:
+Optional starter config:
 
-```
+```sh
 mkdir -p ~/.config/gtk4-layershell-bitwarden
 cp configs/config.example.toml ~/.config/gtk4-layershell-bitwarden/config.toml
 ```
 
-Minimum required setting for non-interactive unlock: `bitwarden.email`.
+For non-interactive unlock flows, configure `bitwarden.email` first:
 
-A missing config file is **not** an error — built-in defaults are used and
-the config can be written later through the CLI or GUI.
-
----
+```sh
+gtk4-layershell-bitwarden config set bitwarden.email you@example.com
+```
 
 ## Login / Unlock CLI Flow
 
-The CLI mirrors the official Bitwarden CLI shape for local auth commands:
+Common commands:
 
 ```sh
 gtk4-layershell-bitwarden login you@example.com --region us
@@ -92,274 +75,162 @@ gtk4-layershell-bitwarden login you@example.com --region self_hosted --server-ur
 gtk4-layershell-bitwarden unlock
 gtk4-layershell-bitwarden status
 gtk4-layershell-bitwarden lock
+gtk4-layershell-bitwarden lock --hard
 gtk4-layershell-bitwarden logout
 ```
 
-`login` prompts for missing email, region (`us`, `eu`, or `self_hosted`),
-self-hosted server URL when needed, master password, and a local PIN with
-confirmation. It authenticates with Bitwarden, stores the email/region/server URL
-in config, runs initial sync, and writes the encrypted cache/outbox under the XDG
-cache directory. `login` stores Bitwarden server tokens (access token, refresh
-token), a local PIN verifier profile, and a short-lived quick-unlock envelope in
-the Linux Secret Service keyring. The profile stores an Argon2id PIN verifier and
-a random `EnvelopeKey`; it does **not** store the raw PIN. The local PIN is never
-sent to Bitwarden. Secret Service is mandatory on Linux; if unavailable, auth
-commands fail with a `keyring_unavailable` error.
+`login` prompts for missing email, region (`us`, `eu`, or `self_hosted`), self-hosted server URL when needed, master password, and a local unlock PIN with confirmation. It authenticates with Bitwarden, stores account config, runs initial sync unless `--no-sync` is set, and writes encrypted cache/outbox files under the XDG cache directory.
 
-The local PIN is configured once per Bitwarden account/server. A soft lock clears
-decrypted vault state from the running process but keeps the boot-bound
-quick-unlock envelope. After the master password and 2FA have unlocked Bitwarden
-once for the current Linux boot/session, reopening the overlay or running
-`unlock` asks only for the local PIN.
+`unlock` uses the configured account and asks for the local PIN when a boot-bound quick-unlock envelope is available. If the envelope is missing or invalid, run `login` again with the Bitwarden master password to recreate quick unlock.
 
-A hard lock deletes the quick-unlock envelope but keeps the token bundle and PIN
-profile. After hard lock, reboot, Linux logout/login/keyring teardown, or too
-many failed PIN attempts, the next recovery uses the Bitwarden master password
-only to recreate quick unlock. You do not enter or choose a PIN again unless you
-are doing PIN-only soft unlock, explicitly resetting it, or logging in from a
-full logout/setup state.
+`lock` is a soft lock by default: it clears resident process state and keeps credentials, the quick-unlock envelope, encrypted cache, and encrypted outbox. `lock --hard` deletes only the quick-unlock envelope while keeping the token bundle and PIN profile.
 
-`unlock` uses the configured email/region and prompts for the local PIN when a
-boot-bound quick-unlock envelope is available. If the envelope is missing or
-invalid, use the GTK overlay renewal flow or run `login` again with the Bitwarden
-master password to recreate quick unlock.
+`logout` removes Bitwarden tokens, the PIN profile, the quick-unlock envelope, encrypted cache, encrypted outbox, and local account identity config. The next `login` prompts for email again.
 
-Note for headless/CI environments: Secret Service depends on a running desktop
-session with a D-Bus session bus and a keyring daemon such as GNOME Keyring or
-KWallet. Headless servers, containers, and CI pipelines typically lack this
-infrastructure and will see `keyring_unavailable` errors. In those environments,
-run a compatible keyring service or use a different auth strategy outside this
-local desktop client.
-
-`lock` is a soft lock by default: it clears only resident process state and does
-not delete the token bundle, PIN profile, quick-unlock envelope, encrypted cache,
-or outbox. Use `lock --hard` to delete only the quick-unlock envelope while
-keeping Bitwarden tokens and the PIN profile.
-
-`logout` removes Bitwarden tokens, the PIN profile, the quick-unlock envelope,
-the encrypted cache, and the encrypted outbox from disk.
-
-All auth commands support:
+Auth flags:
 
 ```sh
---raw                 # print minimal output ("login ok" or "unlock ok")
---passwordenv NAME    # read master password from an environment variable
---passwordfile PATH   # read master password from a file
+--raw                 # print minimal output, such as "login ok" or "unlock ok"
 --no-sync             # authenticate/unlock without waiting for initial sync
+--passwordenv NAME    # login: read master password from an environment variable
+--passwordfile PATH   # login: read master password from a file
+--pinenv NAME         # unlock: read local PIN from an environment variable
+--pinfile PATH        # unlock: read local PIN from a file
 ```
 
-The app does **not** use the `BW_SESSION` environment variable. Access tokens,
-refresh tokens, raw PINs, and vault keys are never printed to stdout or stderr.
+For backward compatibility, `unlock` also accepts `--passwordenv` and `--passwordfile` as legacy aliases for PIN input. Prefer `--pinenv` and `--pinfile` for new scripts.
 
-On Wayland, the launcher re-execs itself with `libgtk4-layer-shell.so.0` in
-`LD_PRELOAD` before GTK initializes. This matches the sekeve bootstrap and is
-needed on compositors such as Niri where gtk4-layer-shell's GDK hook must be
-loaded before GTK. If the GTK overlay is still launched outside a layer-shell-
-capable Wayland session, the command exits with guidance to use `login`,
-`unlock`, or `status` from the terminal instead.
+The app does **not** use the `BW_SESSION` environment variable. Access tokens, refresh tokens, raw PINs, vault keys, and vault content are never printed to stdout or stderr.
 
----
+Headless servers, containers, and CI usually do not have a D-Bus session bus plus Secret Service provider. Auth commands in those environments typically fail with `keyring_unavailable`.
 
 ## Environment Overrides
 
-All config keys can be overridden through environment variables with the
-prefix `GLSBW_` and dots replaced by underscores.
+All config keys can be overridden through environment variables with the `GLSBW_` prefix and dots replaced by underscores.
 
 | Environment variable | Config key |
 |---|---|
 | `GLSBW_BITWARDEN_EMAIL` | `bitwarden.email` |
 | `GLSBW_BITWARDEN_REGION` | `bitwarden.region` |
+| `GLSBW_BITWARDEN_SERVER_URL` | `bitwarden.server_url` |
+| `GLSBW_DEVICE_IDENTIFIER` | `device.identifier` |
 | `GLSBW_SYNC_REVISION_CHECK_INTERVAL` | `sync.revision_check_interval` |
 | `GLSBW_SECURITY_IDLE_RELOCK_AFTER` | `security.idle_relock_after` |
+| `GLSBW_SECURITY_RESIDENT_RELOCK_AFTER` | `security.resident_relock_after` |
 | `GLSBW_ACTIONS_CLIPBOARD_CLEAR_AFTER` | `actions.clipboard_clear_after` |
 | `GLSBW_APPEARANCE_UI_SCALE` | `appearance.ui_scale` |
 | `GLSBW_CACHE_TTL` | `cache.ttl` |
 
-Environment overrides are **always** active and take precedence over the
-config file.
-
----
+Environment overrides take precedence over the config file.
 
 ## Logging
 
-The backend writes logs to a rotating file by default:
+Logs are written to a rotating file by default:
 
-```
+```sh
 $XDG_STATE_HOME/gtk4-layershell-bitwarden/logs/gtk4-layershell-bitwarden.log
 ```
 
-On Linux, if `$XDG_STATE_HOME` is unset, the default path falls back to:
+If `$XDG_STATE_HOME` is unset, Linux defaults to:
 
-```
+```sh
 ~/.local/state/gtk4-layershell-bitwarden/logs/gtk4-layershell-bitwarden.log
 ```
 
-Default logging is **file-only**, level `info`, and JSON formatted. Set
-`GLSBW_LOG_CONSOLE=true` to mirror log output to stderr as well as the file.
+Default logging is file-only, level `info`, and JSON formatted. Set `GLSBW_LOG_CONSOLE=true` to mirror logs to stderr.
 
 | Environment variable | Purpose |
 |---|---|
-| `GLSBW_LOG_LEVEL` | Log level: `trace`, `debug`, `info`, `warn`, `warning`, `error`, `fatal`, `panic`, or `disabled` |
-| `GLSBW_LOG_FORMAT` | File format: `json` or `console` |
-| `GLSBW_LOG_CONSOLE` | Boolean; when `true`, mirrors logs to stderr |
-| `GLSBW_LOG_PATH` | Override the log file path |
+| `GLSBW_LOG_LEVEL` | `trace`, `debug`, `info`, `warn`, `warning`, `error`, `fatal`, `panic`, or `disabled` |
+| `GLSBW_LOG_FORMAT` | `json` or `console` |
+| `GLSBW_LOG_CONSOLE` | Mirror logs to stderr when `true` |
+| `GLSBW_LOG_PATH` | Override log file path |
 | `GLSBW_LOG_MAX_SIZE_MB` | Rotate after this many MiB |
 | `GLSBW_LOG_MAX_BACKUPS` | Number of rotated backups to keep |
 | `GLSBW_LOG_MAX_AGE_DAYS` | Maximum age of rotated logs in days |
 
-Invalid logging environment values fail startup with a clear error naming the
-invalid variable. The project follows a strict **no-secret logging** policy:
-passwords, tokens, PINs, vault keys, and vault content must never be written to
-logs.
-
----
+Invalid logging environment values fail startup with a clear error naming the invalid variable. The project follows a strict no-secret logging policy.
 
 ## Compositor Hotkey
 
 Bind a compositor hotkey to launch the overlay. Example for Sway:
 
-```
+```sh
 # ~/.config/sway/config
 bindsym $mod+Shift+b exec /path/to/gtk4-layershell-bitwarden
 ```
 
-The overlay window uses the layer-shell protocol and requests exclusive
-keyboard focus, so it will capture input until dismissed.
-
----
+On Wayland, the launcher re-execs itself with `libgtk4-layer-shell.so.0` in `LD_PRELOAD` before GTK initializes. This is required on compositors where gtk4-layer-shell's GDK hook must load before GTK.
 
 ## Keyboard Shortcuts
 
 | Shortcut | Context | Action |
 |---|---|---|
-| `Enter` (on unlock) | Unlock | Authenticates with email + master password |
-| (typing) | Search | Live search with debounce (150 ms) |
-| `Up` / `Down` | Search | Navigate through result rows |
-| `Enter` | Search | Perform **primary action** on selected row (see `[actions]` config) |
-| `Ctrl` + `Enter` | Search | Open detail view for the selected row |
+| `Enter` on unlock | Unlock | Authenticates with local PIN or master-password recovery flow |
+| typing | Search | Live search with debounce |
+| `Up` / `Down` | Search | Navigate result rows |
+| `Enter` | Search | Perform configured primary action |
+| `Ctrl` + `Enter` | Search | Open detail view |
 | `Ctrl` + `N` | Search | Create a new login item |
 | `Escape` | Any | Quit the overlay |
 | `Escape` / `Backspace` | Detail / Form | Return to search view |
-| Click buttons | Detail / Form | Edit, Save, Trash, Restore, Delete permanently |
 
-**Copy actions status**: The primary action `copy_password` and
-`copy_username` currently **set an in-app status indicator** ("Password
-copied" / "Username copied") but do **not** yet call the system clipboard.
-The clipboard adapter exists in the codebase but is not wired to the GUI
-primary action pipeline as of Phase 6. `open_url` is also not wired yet
-and falls back to `copy_password`. These will be addressed in a follow-up
-phase.
-
----
+In v0.1.0, `copy_password` and `copy_username` write to the system clipboard through the GTK/GDK clipboard and then update the in-app status indicator. `open_url` is accepted by config validation but currently falls back to `copy_password`.
 
 ## Cache and Security Model
 
-- **File paths**: All XDG paths are centralized in
-  `internal/adapters/paths/xdg/`. Config, cache, outbox, and state/log paths
-  are derived from the same adapter:
-  - **Config**: `$XDG_CONFIG_HOME/gtk4-layershell-bitwarden/config.toml` —
-    falls back to `os.UserConfigDir()`, then `./`.
-  - **Cache / Outbox**: `$XDG_CACHE_HOME/gtk4-layershell-bitwarden/{cache,outbox}.json` —
-    falls back to `os.UserCacheDir()`, then `os.TempDir()`.
-  - **State / Log**: `$XDG_STATE_HOME/gtk4-layershell-bitwarden/` —
-    falls back to `$HOME/.local/state/`, then `os.TempDir()/state/`.
-    Backend logs are written under the `logs/` subdirectory by default.
-- **Encrypted cache**: The vault snapshot and outbox are stored on disk
-  encrypted with a key derived from the master password using Argon2id and a
-  persisted per-cache salt. See `internal/adapters/cache/`.
-- **No plaintext search index**: The in-memory search index (`vault.BuildIndex`)
-  is never written to disk. On relock it is dropped.
-- **File permissions**: Config directory is created with `0700`, config file
-  with `0600`. Cache files use the same restrictive permissions.
-- **No HTTP body dumps**: The codebase is checked by `make safety` for
-  accidental HTTP body-dump patterns (HTTP utility request/response
-  dumping, token leakage, or plaintext password in command lines).
-- **No secret logging**: Passwords, tokens, and vault content are never
-  written to logs.
-
----
+- **XDG paths**: config, cache, outbox, state, and log paths are derived from one XDG path adapter.
+- **Encrypted cache**: vault snapshots and outbox data are encrypted on disk with a key derived from the master password using Argon2id and a persisted per-cache salt.
+- **Secret Service storage**: Bitwarden token bundles, PIN verifier profiles, and quick-unlock envelopes are stored in the Linux Secret Service keyring.
+- **Local PIN model**: the local PIN is verified with Argon2id and is never sent to Bitwarden. The quick-unlock envelope is bound to the current boot/session.
+- **No plaintext search index**: the search index is rebuilt in memory and dropped on relock.
+- **Restrictive file permissions**: config/cache directories use `0700`; config/cache files use `0600`.
+- **No HTTP body dumps**: `make safety` checks for accidental request/response dumps and unsafe persistence patterns.
+- **No secret logging**: passwords, tokens, PINs, vault keys, and vault content must never be written to logs.
 
 ## Offline-First Sync / Outbox / Conflicts
 
-- Mutations (create, update, trash, restore, delete) are attempted against
-  the remote server first. If the server is unreachable the mutation is
-  queued locally in an **outbox** (`internal/core/sync/types.go`) and
-  persisted in encrypted form.
-- On the next successful sync the outbox is replayed against the server.
-- If a conflict is detected (local mutation + remote change for the same
-  item), the application emits a `ConflictDetected` event and marks the
-  item with a conflict badge. Resolution strategies (keep remote, keep
-  local, duplicate) are available through `ResolveConflict`.
-- The outbox stores mutations **by ID** and deduplicates them on load.
+Mutations are attempted against the remote server first. If the server is unreachable, the mutation is queued in an encrypted local outbox and replayed on the next successful sync.
 
----
+If a local mutation conflicts with a remote change for the same item, the service records a conflict and marks the item. Conflict resolution primitives exist in the service layer; the full GUI conflict-resolution flow is still planned.
+
+The `sync` CLI command is currently informational; background sync runs after unlock/login when enabled.
 
 ## Testing
 
-```
-# All unit tests (excluding GTK-dependent code)
+```sh
+# All tests
+go test ./...
+
+# Headless tests excluding GTK-dependent code
 go test -tags nogtk ./...
 
 # Race detection
 go test -race -tags nogtk ./...
 
-# Safety checks (secret leakage, unexpected disk writes)
+# Safety checks
 make safety
 
-# Full check suite (test + lint + safety)
+# Full check suite
 make check
 ```
 
-### Dependency policy
+No tests run against a live Bitwarden server by default. Tests use in-memory or local isolated data.
 
-External dependencies are fetched with:
+## Dependency Policy
 
-```
-go get <module>@latest
-```
+Dependencies are pinned in `go.mod` and `go.sum`. Public releases must not require local `replace` directives. No vendored dependency tree is committed.
 
-No vendoring or `go mod vendor` is used. The SDK fork is resolved by the
-`replace` directive in `go.mod`.
-
-### Note about live tests
-
-No tests run against a live Bitwarden server by default. All tests operate
-on in-memory or local isolated data.
-
-### Forked dependency: `github.com/bnema/purego`
-
-`github.com/bnema/puregotk` (v0.5.1) transitively pulls a fork of the
-[cgo-free FFI library `purego`](https://github.com/ebitengine/purego) from
-`github.com/bnema/purego` (v0.11.0-bnema.2). This fork includes patches
-necessary for Wayland/GTK4 layer-shell support that are not yet upstream.
-
-The version is pinned by `puregotk`'s `go.mod` and is not directly
-required in this project's `go.mod`. The fork is maintained by the same
-organisation that maintains `puregotk`. No `replace` directive is needed;
-the version is resolved transitively. If the patches are merged upstream,
-the dependency can be switched back to the official `github.com/ebitengine/purego`.
-
----
+`github.com/bnema/puregotk` transitively uses `github.com/bnema/purego`, a maintained fork of the cgo-free FFI library needed for the current GTK/layer-shell runtime path. If those patches are merged upstream, the dependency can move back to the upstream module.
 
 ## Known Limitations
 
-- **Attachments**: `ListAttachments`, `DownloadAttachment`, `UploadAttachment`,
-  and `DeleteAttachment` all return `ErrUnsupported` from the application
-  service (`internal/app/service.go`). Attachment support is planned for a
-  future phase.
-- **Clipboard integration**: The clipboard TTL-based adapter exists
-  (`internal/adapters/clipboard/`) but is not yet wired into the GTK
-  overlay's primary action flow (`doPrimaryAction` in
-  `internal/adapters/gui/omnibox/view_linux.go`). Copy actions currently
-  display an in-app status message without touching the system clipboard.
-- **open_url default**: The `default_primary_action = "open_url"` config
-  value is accepted by validation but not yet wired in the GUI; it falls
-  back to `copy_password`.
-- **Conflict resolution UX**: The conflict resolution functions exist in
-  the service layer but are not yet surfaced through the GUI detail view.
-- **Form editing**: Editing existing items is supported, but adding custom
-  fields is not yet available in the form.
+- Attachments are not supported yet.
+- Clipboard integration uses the GTK/GDK clipboard backend.
+- `open_url` is accepted by config validation but not implemented in the GUI.
+- Conflict resolution service methods exist, but GUI conflict resolution is incomplete.
+- Editing existing items is supported, but adding custom fields in the form is not yet available.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

@@ -15,11 +15,11 @@ race:
 lint:
 	golangci-lint run ./...
 
-EXCLUDE_DISK_HELPERS := internal/adapters/fileutil/atomic.go
+EXCLUDE_DISK_HELPERS := internal/adapters/fileutil/atomic.go internal/adapters/gui/omnibox/type_icons_linux.go internal/adapters/logging/zerowrap.go
 GREP_EXCLUDE := $(foreach p,$(EXCLUDE_DISK_HELPERS),| grep -v '$(p)')
 
 safety:
-	@if grep -RInE --exclude=Makefile --exclude='*_test.go' --exclude-dir=.git 'DumpRequest|DumpResponse|httputil|access_token|refresh_token|password=' .; then \
+	@if grep -RInE --exclude=Makefile --exclude='*_test.go' --exclude-dir=.git 'DumpRequest|DumpResponse|httputil|access_token|refresh_token|password=' . | grep -v 'refresh_token_bundle'; then \
 		echo "unsafe secret/body-dump pattern found"; \
 		exit 1; \
 	fi

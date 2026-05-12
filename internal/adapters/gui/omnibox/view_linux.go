@@ -187,7 +187,7 @@ func New(ctx context.Context, service in.AppService, quit func(), retainFn func(
 	}
 
 	v.buildUI()
-	v.clipboard = clipadapter.NewWaylandPreferred(
+	v.clipboard = clipadapter.New(
 		func(text string) error {
 			done := make(chan error, 1)
 			idleAddOnce(func() {
@@ -195,7 +195,7 @@ func New(ctx context.Context, service in.AppService, quit func(), retainFn func(
 					done <- clipadapter.ErrClipboardUnavailable
 					return
 				}
-				clipboard := v.Root.Widget.GetClipboard()
+				clipboard := v.Root.GetClipboard()
 				if clipboard == nil {
 					done <- clipadapter.ErrClipboardUnavailable
 					return
@@ -212,7 +212,7 @@ func New(ctx context.Context, service in.AppService, quit func(), retainFn func(
 					done <- clipadapter.ErrClipboardUnavailable
 					return
 				}
-				clipboard := v.Root.Widget.GetClipboard()
+				clipboard := v.Root.GetClipboard()
 				if clipboard == nil {
 					done <- clipadapter.ErrClipboardUnavailable
 					return
@@ -279,7 +279,7 @@ func New(ctx context.Context, service in.AppService, quit func(), retainFn func(
 // buildUI creates all GTK widgets.
 func (v *View) buildUI() {
 	v.Root = gtklib.NewBox(gtklib.OrientationVerticalValue, 0)
-	v.Root.Widget.SetSizeRequest(defaultOmniboxWidth, -1)
+	v.Root.SetSizeRequest(defaultOmniboxWidth, -1)
 	styleCtx := v.Root.GetStyleContext()
 	styleCtx.AddClass("glsbw-omnibox")
 
@@ -671,7 +671,8 @@ func (v *View) AttachKeyController(window *gtklib.Window) {
 					return true
 				}
 				v.mu.Unlock()
-				return false
+				v.doPrimaryAction()
+				return true
 			case gdk.KEY_n:
 				if mod&gdk.ControlMaskValue != 0 {
 					v.mu.Unlock()
@@ -841,16 +842,16 @@ func (v *View) renderUnlockModeWidgets(mode Mode) {
 	unlockCtx := v.unlockBox.GetStyleContext()
 	passwordCtx := v.passwordEntry.GetStyleContext()
 	if isPINOnly {
-		v.Root.Widget.SetSizeRequest(pinUnlockOmniboxWidth, -1)
+		v.Root.SetSizeRequest(pinUnlockOmniboxWidth, -1)
 		v.passwordEntry.SetHalign(gtklib.AlignCenterValue)
-		v.passwordEntry.Widget.SetSizeRequest(pinUnlockEntryWidth, -1)
+		v.passwordEntry.SetSizeRequest(pinUnlockEntryWidth, -1)
 		unlockCtx.AddClass("glsbw-pin-unlock")
 		passwordCtx.AddClass("glsbw-pin-entry")
 		return
 	}
-	v.Root.Widget.SetSizeRequest(defaultOmniboxWidth, -1)
+	v.Root.SetSizeRequest(defaultOmniboxWidth, -1)
 	v.passwordEntry.SetHalign(gtklib.AlignFillValue)
-	v.passwordEntry.Widget.SetSizeRequest(-1, -1)
+	v.passwordEntry.SetSizeRequest(-1, -1)
 	unlockCtx.RemoveClass("glsbw-pin-unlock")
 	passwordCtx.RemoveClass("glsbw-pin-entry")
 }
@@ -1314,18 +1315,11 @@ func (v *View) doPrimaryAction() {
 	}
 	v.mu.Unlock()
 
-	action := PrimaryActionFor(row, v.service.Config())
+	cfg := v.service.Config()
+	action := PrimaryActionFor(row, cfg)
 	switch action {
-	case ActionCopyPassword:
-		v.mu.Lock()
-		v.state.SetStatus(Status{Text: "Password copied"})
-		v.mu.Unlock()
-		v.renderStatus()
-	case ActionCopyUsername:
-		v.mu.Lock()
-		v.state.SetStatus(Status{Text: "Username copied"})
-		v.mu.Unlock()
-		v.renderStatus()
+	case ActionCopyPassword, ActionCopyUsername:
+		v.copySelectedRow(row, action, primaryActionClipboardTTL(cfg))
 	default:
 		v.mu.Lock()
 		v.state.OpenDetail()
@@ -1334,6 +1328,42 @@ func (v *View) doPrimaryAction() {
 		v.loadDetail(detailID)
 		idleAddOnce(func() { v.render() })
 	}
+}
+
+func (v *View) copySelectedRow(row Row, action Action, ttl time.Duration) {
+	go func() {
+		item, err := v.service.Get(v.ctx, row.ID)
+		if err != nil {
+			logOverlayError(v.ctx, "copy_primary_load_item", err)
+			idleAddOnce(func() {
+				v.mu.Lock()
+				v.state.SetStatus(Status{Text: genericOperationError, Error: genericOperationError})
+				v.mu.Unlock()
+				v.renderStatus()
+			})
+			return
+		}
+
+		status, err := copyPrimaryAction(v.ctx, v.clipboard, item, action, ttl)
+		if err != nil {
+			logOverlayError(v.ctx, "copy_primary_action", err)
+			statusText := primaryActionErrorStatus(action, err)
+			idleAddOnce(func() {
+				v.mu.Lock()
+				v.state.SetStatus(Status{Text: statusText, Error: statusText})
+				v.mu.Unlock()
+				v.renderStatus()
+			})
+			return
+		}
+
+		idleAddOnce(func() {
+			v.mu.Lock()
+			v.state.SetStatus(Status{Text: status})
+			v.mu.Unlock()
+			v.renderStatus()
+		})
+	}()
 }
 
 // loadDetail fetches a single item and renders the detail view.
@@ -1836,7 +1866,7 @@ func (v *View) renderForm(item vault.Item) {
 		updated := e.BuildItem()
 		showFormError("")
 		saving = true
-		saveBtn.Widget.SetSensitive(false)
+		saveBtn.SetSensitive(false)
 
 		go func() {
 			var result vault.Item
@@ -1854,7 +1884,7 @@ func (v *View) renderForm(item vault.Item) {
 				logOverlayError(v.ctx, operation, err)
 				idleAddOnce(func() {
 					saving = false
-					saveBtn.Widget.SetSensitive(true)
+					saveBtn.SetSensitive(true)
 					showFormError(genericSaveError)
 				})
 				return

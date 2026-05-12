@@ -3,5 +3,11 @@
 /coverage.out
 *.test
 *.log
+*.prof
 .env
+.env.*
+!.env.example
 .DS_Store
+.idea/
+.vscode/
+tmp/

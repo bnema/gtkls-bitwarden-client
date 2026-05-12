@@ -12,7 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	viperadapter "github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/config/viper"
+	viperadapter "github.com/bnema/gtk4-layershell-bitwarden/internal/app/viper"
 	coreauth "github.com/bnema/gtk4-layershell-bitwarden/internal/core/auth"
 	coreconfig "github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"

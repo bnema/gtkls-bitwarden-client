@@ -153,8 +153,8 @@ func ValidateItem(e EditableItem) error {
 }
 
 // DeriveLoginName creates a concise display name from a login URI/site and
-// username. It mirrors sekeve's quick-add ergonomics: the user can type only a
-// site plus optional username, without manually filling a separate name field.
+// username. The user can type only a site plus optional username, without
+// manually filling a separate name field.
 func DeriveLoginName(site, username string) string {
 	domain := ExtractDomain(strings.TrimSpace(site))
 	username = strings.TrimSpace(username)

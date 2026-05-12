@@ -3675,6 +3675,52 @@ func TestItemsDoesNotLeavePlaintextItemsResidentAfterOperation(t *testing.T) {
 	svc.mu.Unlock()
 }
 
+func TestUnlockedReadOperationsPreferResidentStateOverCache(t *testing.T) {
+	cacheKey := []byte("test-cache-key-32-bytes-long!")
+	staleCacheItem := vault.Item{
+		ID:   "item-1",
+		Name: "Google Account",
+		Type: vault.ItemTypeLogin,
+		Login: &vault.Login{
+			Username: "alice@example.com",
+		},
+	}
+	residentItem := vault.Item{
+		ID:   "item-1",
+		Name: "Google Account Fresh",
+		Type: vault.ItemTypeLogin,
+		Login: &vault.Login{
+			Username: "alice@example.com",
+			Password: "correct-horse-battery-staple",
+		},
+	}
+
+	snap := buildCacheSnapshotWithKey(t, cacheKey, []vault.Item{staleCacheItem}, nil)
+
+	svc := NewService(Deps{
+		Cache:     &fakeCache{data: &snap},
+		SecretBox: &fakeSecretBox{},
+	})
+	svc.installUnlockedStateForTest(cacheKey, []vault.Item{residentItem})
+
+	results, err := svc.Search(context.Background(), "Fresh", 10)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, residentItem.Name, results[0].Item.Name)
+
+	got, err := svc.Get(context.Background(), residentItem.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.Login)
+	require.Equal(t, residentItem.Login.Password, got.Login.Password)
+
+	items, err := svc.Items(context.Background())
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.Equal(t, residentItem.Name, items[0].Name)
+	require.NotNil(t, items[0].Login)
+	require.Equal(t, residentItem.Login.Password, items[0].Login.Password)
+}
+
 // ---------------------------------------------------------------------------
 // Login atomicity tests (finding #2)
 // ---------------------------------------------------------------------------

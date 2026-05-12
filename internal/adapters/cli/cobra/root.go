@@ -12,7 +12,6 @@ import (
 
 	cryptobox "github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/cache/crypto"
 	cachefile "github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/cache/file"
-	viperadapter "github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/config/viper"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/gui/gtk"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/gui/layershell"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/paths/xdg"
@@ -21,6 +20,7 @@ import (
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/session/bootid"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/session/pinenvelope"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/app"
+	viperadapter "github.com/bnema/gtk4-layershell-bitwarden/internal/app/viper"
 	coreconfig "github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
 	safelog "github.com/bnema/gtk4-layershell-bitwarden/internal/core/logging"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
@@ -390,6 +390,15 @@ func newLogoutCmd(opts Options, cachePath, outboxPath string) *cobra.Command {
 			if err := clearCacheAndOutbox(cmd.Context(), cachePath, outboxPath); err != nil {
 				return err
 			}
+
+			// Logout returns the local account setup to a first-run state so the
+			// next `login` prompts for the account identity again.
+			cfg.Bitwarden.Email = ""
+			cfg.Bitwarden.ServerURL = ""
+			if err := mgr.Save(cmd.Context(), cfg); err != nil {
+				return fmt.Errorf("clear account config: %w", err)
+			}
+
 			cmd.Println("logged out")
 			return nil
 		},
