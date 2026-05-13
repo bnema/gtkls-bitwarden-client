@@ -27,7 +27,6 @@ func TestSoftLockBeforeQuitRunsClearThenSoftLockThenQuit(t *testing.T) {
 	softLockBeforeQuit(context.Background(), svc,
 		func() { trace = append(trace, "clear") },
 		func() { trace = append(trace, "quit") },
-		func(error) { trace = append(trace, "log") },
 	)
 
 	require.Equal(t, []string{"clear", "softlock", "quit"}, trace)
@@ -40,8 +39,7 @@ func TestSoftLockBeforeQuitStillQuitsOnSoftLockError(t *testing.T) {
 	softLockBeforeQuit(context.Background(), svc,
 		func() { trace = append(trace, "clear") },
 		func() { trace = append(trace, "quit") },
-		func(error) { trace = append(trace, "log") },
 	)
 
-	require.Equal(t, []string{"clear", "softlock", "log", "quit"}, trace)
+	require.Equal(t, []string{"clear", "softlock", "quit"}, trace)
 }

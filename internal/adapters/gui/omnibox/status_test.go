@@ -2,6 +2,7 @@ package omnibox
 
 import (
 	"testing"
+	"time"
 
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/in"
 	"github.com/stretchr/testify/require"
@@ -138,4 +139,10 @@ func TestShouldRefreshRowsOnEvent(t *testing.T) {
 	require.True(t, ShouldRefreshRowsOnEvent(in.SyncUpdated))
 	require.False(t, ShouldRefreshRowsOnEvent(in.SyncChecking))
 	require.False(t, ShouldRefreshRowsOnEvent(in.SyncFailed))
+}
+
+func TestRefreshRowsDelayForEvent(t *testing.T) {
+	require.Equal(t, 1500*time.Millisecond, refreshRowsDelayForEvent(in.SyncUpdated))
+	require.Zero(t, refreshRowsDelayForEvent(in.IndexReady))
+	require.Zero(t, refreshRowsDelayForEvent(in.SyncFailed))
 }

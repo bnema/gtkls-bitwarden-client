@@ -131,9 +131,6 @@ func (o *Overlay) Run(ctx context.Context) error {
 					}
 				},
 				app.Quit,
-				func(err error) {
-					logOverlayError(ctx, "soft_lock_before_quit", err)
-				},
 			)
 		}, o.retain)
 		centerBox.Append(&ob.Root.Widget)
@@ -152,9 +149,6 @@ func (o *Overlay) Run(ctx context.Context) error {
 					}
 				},
 				app.Quit,
-				func(err error) {
-					logOverlayError(ctx, "soft_lock_before_quit", err)
-				},
 			)
 			return true
 		}
@@ -185,9 +179,6 @@ func (o *Overlay) Run(ctx context.Context) error {
 						}
 					},
 					app.Quit,
-					func(err error) {
-						logOverlayError(ctx, "soft_lock_before_quit", err)
-					},
 				)
 			})
 		case <-quitCh:

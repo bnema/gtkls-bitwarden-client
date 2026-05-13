@@ -2,6 +2,7 @@ package omnibox
 
 import (
 	"fmt"
+	"time"
 
 	coreerrors "github.com/bnema/gtk4-layershell-bitwarden/internal/core/errors"
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/in"
@@ -82,6 +83,13 @@ func EmptyRowsText(query string, status Status) string {
 // search results may now be stale and should be reloaded from the service.
 func ShouldRefreshRowsOnEvent(kind in.EventKind) bool {
 	return kind == in.IndexReady || kind == in.SyncUpdated
+}
+
+func refreshRowsDelayForEvent(kind in.EventKind) time.Duration {
+	if kind == in.SyncUpdated {
+		return 1500 * time.Millisecond
+	}
+	return 0
 }
 
 // plural is intentionally English-only because the overlay currently has no

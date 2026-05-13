@@ -64,12 +64,14 @@ type View struct {
 	statusLabel          *gtklib.Label
 	statusBox            *gtklib.Box
 
-	mu             sync.Mutex
-	currentItem    vault.Item
-	activeCategory itemCategory
-	searchTimer    *time.Timer
-	searchLock     sync.Mutex
-	clipboard      out.Clipboard
+	mu              sync.Mutex
+	currentItem     vault.Item
+	activeCategory  itemCategory
+	searchTimer     *time.Timer
+	syncStatusTimer *time.Timer
+	statusVersion   uint64
+	searchLock      sync.Mutex
+	clipboard       out.Clipboard
 
 	// tempMasterPassword and tempPIN hold sensitive values during
 	// ModePINSetup / ModePINConfirm (PIN enrollment). They are cleared
@@ -2115,8 +2117,15 @@ func (v *View) eventLoop(ctx context.Context) {
 			}
 			st := StatusFromEvent(evt)
 			refreshRows := ShouldRefreshRowsOnEvent(evt.Kind)
+			refreshDelay := refreshRowsDelayForEvent(evt.Kind)
 			idleAddOnce(func() {
 				v.mu.Lock()
+				v.statusVersion++
+				statusVersion := v.statusVersion
+				if v.syncStatusTimer != nil {
+					v.syncStatusTimer.Stop()
+					v.syncStatusTimer = nil
+				}
 				v.state.SetStatus(st)
 				mode := v.state.Mode
 				v.mu.Unlock()
@@ -2125,6 +2134,29 @@ func (v *View) eventLoop(ctx context.Context) {
 				// before releasing v.mu avoids holding the lock while refreshSearchRows
 				// reads GTK widgets and starts async service work.
 				if refreshRows && mode == ModeSearch {
+					if refreshDelay > 0 {
+						v.mu.Lock()
+						v.syncStatusTimer = time.AfterFunc(refreshDelay, func() {
+							if v.ctx.Err() != nil {
+								return
+							}
+							idleAddOnce(func() {
+								if v.ctx.Err() != nil {
+									return
+								}
+								v.mu.Lock()
+								if v.state.Mode != ModeSearch || v.statusVersion != statusVersion {
+									v.mu.Unlock()
+									return
+								}
+								v.syncStatusTimer = nil
+								v.mu.Unlock()
+								v.refreshSearchRows()
+							})
+						})
+						v.mu.Unlock()
+						return
+					}
 					v.refreshSearchRows()
 				}
 			})
@@ -2135,6 +2167,13 @@ func (v *View) eventLoop(ctx context.Context) {
 // refreshSearchRows reloads the visible search list after cache/index/sync
 // changes. It must be called on the GTK thread so reading searchEntry is safe.
 func (v *View) refreshSearchRows() {
+	v.mu.Lock()
+	if v.state.Mode != ModeSearch {
+		v.mu.Unlock()
+		return
+	}
+	v.mu.Unlock()
+
 	query := v.searchEntry.GetText()
 	if query == "" {
 		v.loadAllItems()
