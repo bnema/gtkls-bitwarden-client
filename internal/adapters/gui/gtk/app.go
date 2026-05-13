@@ -124,10 +124,17 @@ func (o *Overlay) Run(ctx context.Context) error {
 		// Create the omnibox View. It builds its own widgets and manages its
 		// own lifecycle via the context.
 		ob = omnibox.New(ctx, o.service, func() {
-			if ob != nil {
-				ob.ClearSensitiveState()
-			}
-			app.Quit()
+			softLockBeforeQuit(ctx, o.service,
+				func() {
+					if ob != nil {
+						ob.ClearSensitiveState()
+					}
+				},
+				app.Quit,
+				func(err error) {
+					logOverlayError(ctx, "soft_lock_before_quit", err)
+				},
+			)
 		}, o.retain)
 		centerBox.Append(&ob.Root.Widget)
 
@@ -138,10 +145,17 @@ func (o *Overlay) Run(ctx context.Context) error {
 
 		// Close request clears temporary omnibox secrets and quits the application.
 		closeCb := func(_ gtklib.Window) bool {
-			if ob != nil {
-				ob.ClearSensitiveState()
-			}
-			app.Quit()
+			softLockBeforeQuit(ctx, o.service,
+				func() {
+					if ob != nil {
+						ob.ClearSensitiveState()
+					}
+				},
+				app.Quit,
+				func(err error) {
+					logOverlayError(ctx, "soft_lock_before_quit", err)
+				},
+			)
 			return true
 		}
 		o.retain(closeCb)
@@ -164,10 +178,17 @@ func (o *Overlay) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			idleAddOnce(func() {
-				if ob != nil {
-					ob.ClearSensitiveState()
-				}
-				app.Quit()
+				softLockBeforeQuit(ctx, o.service,
+					func() {
+						if ob != nil {
+							ob.ClearSensitiveState()
+						}
+					},
+					app.Quit,
+					func(err error) {
+						logOverlayError(ctx, "soft_lock_before_quit", err)
+					},
+				)
 			})
 		case <-quitCh:
 			// app.Run already returned; nothing to do.

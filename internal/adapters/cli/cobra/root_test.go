@@ -168,6 +168,38 @@ ui_scale = 5.0
 	assert.False(t, called, "RunOverlay should NOT be called on invalid config")
 }
 
+type shutdownTrackingService struct {
+	*fakeAuthService
+	shutdownCalls int
+}
+
+func (s *shutdownTrackingService) Shutdown(context.Context) error {
+	s.shutdownCalls++
+	return nil
+}
+
+func TestRootCommandShutsServiceDownAfterOverlayReturns(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	require.NoError(t, os.WriteFile(path, []byte("[bitwarden]\nemail = 'test@example.com'\n"), 0o600))
+
+	svc := &shutdownTrackingService{fakeAuthService: newFakeAuthService()}
+	opts := Options{
+		Version:    "v0.1.0-test",
+		ConfigPath: path,
+		ComposeService: func(context.Context, *coreconfig.Config, string, string) (in.AppService, error) {
+			return svc, nil
+		},
+		RunOverlay: func(context.Context, in.AppService) error {
+			return nil
+		},
+	}
+
+	_, err := executeCmd(t, opts, []string{})
+	require.NoError(t, err)
+	require.Equal(t, 1, svc.shutdownCalls)
+}
+
 func TestConfigPathPrintsTempPath(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
