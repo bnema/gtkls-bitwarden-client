@@ -8,6 +8,8 @@ import (
 	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/in"
 )
 
+const syncUpdatedRefreshDelay = 1500 * time.Millisecond
+
 // Status represents the sync/status bar state.
 type Status struct {
 	Text          string
@@ -87,7 +89,7 @@ func ShouldRefreshRowsOnEvent(kind in.EventKind) bool {
 
 func refreshRowsDelayForEvent(kind in.EventKind) time.Duration {
 	if kind == in.SyncUpdated {
-		return 1500 * time.Millisecond
+		return syncUpdatedRefreshDelay
 	}
 	return 0
 }
