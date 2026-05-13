@@ -152,7 +152,7 @@ func (s *Service) syncOnceByMode(ctx context.Context, mode backgroundSyncMode) {
 	backgroundSyncEnabled := s.backgroundSyncEnabledLocked()
 	s.mu.Unlock()
 
-	if locked || suspended || (mode == backgroundSyncCacheOnly && !backgroundSyncEnabled) {
+	if locked || suspended || !backgroundSyncEnabled {
 		return
 	}
 

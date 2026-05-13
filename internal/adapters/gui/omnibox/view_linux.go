@@ -1555,8 +1555,9 @@ func (v *View) renderDetail(detail Detail) {
 	backBtn := gtklib.NewButtonWithLabel("← Back")
 	backClickedCb := func(_ gtklib.Button) {
 		v.mu.Lock()
-		v.state.Back()
+		mode := v.backMode()
 		v.mu.Unlock()
+		v.setBackgroundSyncSuspended(syncSuspendedForMode(mode))
 		idleAddOnce(func() { v.render() })
 	}
 	handler := backBtn.ConnectClicked(&backClickedCb)
@@ -1656,9 +1657,9 @@ func (v *View) renderDetail(detail Detail) {
 	editBtn := gtklib.NewButtonWithLabel("Edit")
 	editCb := func(_ gtklib.Button) {
 		v.mu.Lock()
-		v.state.Mode = ModeForm
 		item := v.currentItem
 		v.mu.Unlock()
+		v.setMode(ModeForm)
 		idleAddOnce(func() {
 			v.renderForm(item)
 			v.render()
@@ -1758,8 +1759,9 @@ func (v *View) renderForm(item vault.Item) {
 	backBtn := gtklib.NewButtonWithLabel("← Back")
 	backClickedCb := func(_ gtklib.Button) {
 		v.mu.Lock()
-		v.state.Back()
+		mode := v.backMode()
 		v.mu.Unlock()
+		v.setBackgroundSyncSuspended(syncSuspendedForMode(mode))
 		idleAddOnce(func() { v.render() })
 	}
 	handler := backBtn.ConnectClicked(&backClickedCb)
@@ -1923,9 +1925,9 @@ func (v *View) renderForm(item vault.Item) {
 				v.state.Error = ""
 				v.state.SetStatus(Status{Text: "Saved " + result.Name})
 				v.currentItem = result
-				v.state.Mode = ModeSearch
 				v.state.DetailID = ""
 				v.mu.Unlock()
+				v.setMode(ModeSearch)
 				v.render()
 				v.refreshSearchRows()
 				v.searchEntry.GrabFocus()

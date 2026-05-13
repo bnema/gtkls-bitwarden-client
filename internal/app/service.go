@@ -886,15 +886,23 @@ func (s *Service) unlock(ctx context.Context, email, password string, prompt aut
 		s.emit(IndexReady, "search index ready")
 	}
 
-	// Start background sync worker detached from cancellation while preserving logger values.
-	workerCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	s.cancelWorkers = cancel
-	s.backgroundSyncMode = backgroundSyncResident
-	s.backgroundSyncSuspended = false
-	s.emit(Unlocking, "starting sync worker")
+	var workerCtx context.Context
+	var cancel context.CancelFunc
+	var startWorker bool
+	if s.backgroundSyncEnabledLocked() {
+		// Start background sync worker detached from cancellation while preserving logger values.
+		workerCtx, cancel = context.WithCancel(context.WithoutCancel(ctx))
+		s.cancelWorkers = cancel
+		s.backgroundSyncMode = backgroundSyncResident
+		s.backgroundSyncSuspended = false
+		s.emit(Unlocking, "starting sync worker")
+		startWorker = true
+	}
 	s.mu.Unlock()
 
-	s.startBackgroundSyncWorker(workerCtx, backgroundSyncResident)
+	if startWorker {
+		s.startBackgroundSyncWorker(workerCtx, backgroundSyncResident)
+	}
 
 	return nil
 }

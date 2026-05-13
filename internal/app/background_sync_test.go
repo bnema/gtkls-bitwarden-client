@@ -181,6 +181,19 @@ func TestUnlockWithPINLeavesWorkerDisabledWhenBackgroundSyncDisabled(t *testing.
 	svc.mu.Unlock()
 }
 
+func TestUnlockLeavesResidentWorkerDisabledWhenBackgroundSyncDisabled(t *testing.T) {
+	cfg := coreconfig.Default()
+	cfg.Security.BackgroundSync.Enabled = false
+
+	svc := NewService(Deps{Config: cfg, Remote: &fakeRemote{}})
+	require.NoError(t, svc.Unlock(context.Background(), "user@example.com", "master-password"))
+
+	svc.mu.Lock()
+	require.Equal(t, backgroundSyncDisabled, svc.backgroundSyncMode)
+	require.Nil(t, svc.cancelWorkers)
+	svc.mu.Unlock()
+}
+
 func TestSyncOnceCacheOnlyRefreshesEncryptedCacheWithoutResidentState(t *testing.T) {
 	cacheKey := []byte("test-cache-key-32-bytes-long!")
 	cachedItem := vault.Item{ID: "item-1", Name: "GitHub", Type: vault.ItemTypeLogin}
