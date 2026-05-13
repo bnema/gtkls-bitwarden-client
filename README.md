@@ -81,9 +81,9 @@ gtk4-layershell-bitwarden logout
 
 `login` prompts for missing email, region (`us`, `eu`, or `self_hosted`), self-hosted server URL when needed, master password, and a local unlock PIN with confirmation. It authenticates with Bitwarden, stores account config, runs initial sync unless `--no-sync` is set, and writes encrypted cache/outbox files under the XDG cache directory.
 
-`unlock` uses the configured account and asks for the local PIN when a boot-bound quick-unlock envelope is available. If the envelope is missing or invalid, run `login` again with the Bitwarden master password to recreate quick unlock.
+`unlock` uses the configured account and asks for the local PIN when a boot-bound quick-unlock envelope is available. When background sync is enabled, a successful PIN unlock refreshes the encrypted cache asynchronously without installing a long-lived resident plaintext vault. If the envelope is missing or invalid, run `login` again with the Bitwarden master password to recreate quick unlock.
 
-`lock` is a soft lock by default: it clears resident process state and keeps credentials, the quick-unlock envelope, encrypted cache, and encrypted outbox. `lock --hard` deletes only the quick-unlock envelope while keeping the token bundle and PIN profile.
+`lock` is a soft lock by default: it clears resident process state and keeps credentials, the quick-unlock envelope, encrypted cache, and encrypted outbox. Closing the overlay also performs this soft-lock step before GTK exits. `lock --hard` deletes only the quick-unlock envelope while keeping the token bundle and PIN profile.
 
 `logout` removes Bitwarden tokens, the PIN profile, the quick-unlock envelope, encrypted cache, encrypted outbox, and local account identity config. The next `login` prompts for email again.
 
@@ -194,7 +194,7 @@ Mutations are attempted against the remote server first. If the server is unreac
 
 If a local mutation conflicts with a remote change for the same item, the service records a conflict and marks the item. Conflict resolution primitives exist in the service layer; the full GUI conflict-resolution flow is still planned.
 
-The `sync` CLI command is currently informational; background sync runs after unlock/login when enabled.
+The `sync` CLI command is currently informational; background sync runs after unlock/login when enabled. Full-unlock sessions use the resident sync path, while PIN-unlock sessions use a cache-only sync path that refreshes encrypted cache/outbox state without leaving the full vault resident in service memory. Sync ticks that fire while the omnibox is in form/edit mode are skipped until the next interval.
 
 ## Testing
 
