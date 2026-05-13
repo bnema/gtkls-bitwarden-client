@@ -350,3 +350,44 @@ func TestSyncOnceCacheOnlyReplaysOutboxBeforeClearingEncryptedCache(t *testing.T
 		t.Fatal("remote.Create was not called before cache-only sync cleared the encrypted outbox")
 	}
 }
+
+func TestSoftLockResetsBackgroundSyncState(t *testing.T) {
+	svc := NewService(Deps{Config: coreconfig.Default(), Remote: &fakeRemote{}})
+
+	svc.mu.Lock()
+	svc.state = auth.LockStateUnlocked
+	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.backgroundSyncSuspended = true
+	svc.cancelWorkers = func() {}
+	svc.mu.Unlock()
+
+	require.NoError(t, svc.SoftLock(context.Background()))
+
+	svc.mu.Lock()
+	require.Equal(t, backgroundSyncDisabled, svc.backgroundSyncMode)
+	require.False(t, svc.backgroundSyncSuspended)
+	require.Nil(t, svc.cancelWorkers)
+	svc.mu.Unlock()
+}
+
+func TestSyncOnceResidentStillInstallsResidentState(t *testing.T) {
+	remote := &fakeRemote{
+		revisionRev: "rev-1",
+		syncItems:   []vault.Item{{ID: "item-1", Name: "GitHub", Type: vault.ItemTypeLogin, RevisionDate: time.Now()}},
+		syncRev:     "rev-1",
+	}
+	svc := NewService(Deps{Config: coreconfig.Default(), Remote: remote})
+
+	svc.mu.Lock()
+	svc.state = auth.LockStateUnlocked
+	svc.backgroundSyncMode = backgroundSyncResident
+	svc.mu.Unlock()
+
+	svc.syncOnceResident(context.Background())
+
+	svc.mu.Lock()
+	require.Len(t, svc.items, 1)
+	require.Equal(t, "GitHub", svc.items[0].Name)
+	require.Nil(t, svc.index)
+	svc.mu.Unlock()
+}
