@@ -194,6 +194,17 @@ func (v *View) backMode() Mode {
 	return v.state.Mode
 }
 
+func (v *View) openDetailSelected() (string, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	v.state.OpenDetail()
+	if v.state.Mode != ModeDetail || v.state.DetailID == "" {
+		return "", false
+	}
+	return v.state.DetailID, true
+}
+
 // New creates a new View, builds all GTK widgets, queries auth status to choose
 // the initial mode, and starts the event listener.
 func New(ctx context.Context, service in.AppService, quit func(), retainFn func(interface{})) *View {
@@ -681,9 +692,12 @@ func (v *View) AttachKeyController(window *gtklib.Window) {
 				return true
 			case gdk.KEY_Return, gdk.KEY_KP_Enter:
 				if mod&gdk.ControlMaskValue != 0 {
-					v.state.OpenDetail()
-					detailID := v.state.DetailID
 					v.mu.Unlock()
+					detailID, opened := v.openDetailSelected()
+					if !opened {
+						return true
+					}
+					v.setMode(ModeDetail)
 					v.loadDetail(detailID)
 					idleAddOnce(func() { v.render() })
 					return true
@@ -1342,10 +1356,11 @@ func (v *View) doPrimaryAction() {
 	case ActionCopyPassword, ActionCopyUsername:
 		v.copySelectedRow(row, action, primaryActionClipboardTTL(cfg), cfg.Actions.CloseAfterCopy)
 	default:
-		v.mu.Lock()
-		v.state.OpenDetail()
-		detailID := v.state.DetailID
-		v.mu.Unlock()
+		detailID, opened := v.openDetailSelected()
+		if !opened {
+			return
+		}
+		v.setMode(ModeDetail)
 		v.loadDetail(detailID)
 		idleAddOnce(func() { v.render() })
 	}

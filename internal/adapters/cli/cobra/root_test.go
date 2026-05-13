@@ -3,6 +3,7 @@ package cobra
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -172,6 +173,7 @@ type shutdownTrackingService struct {
 	*fakeAuthService
 	shutdownCalls int
 	events        *[]string
+	shutdownErr   error
 }
 
 func (s *shutdownTrackingService) Shutdown(context.Context) error {
@@ -179,7 +181,7 @@ func (s *shutdownTrackingService) Shutdown(context.Context) error {
 	if s.events != nil {
 		*s.events = append(*s.events, "shutdown")
 	}
-	return nil
+	return s.shutdownErr
 }
 
 func TestRootCommandShutsServiceDownAfterOverlayReturns(t *testing.T) {
@@ -205,6 +207,39 @@ func TestRootCommandShutsServiceDownAfterOverlayReturns(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, svc.shutdownCalls)
 	require.Equal(t, []string{"overlay", "shutdown"}, events)
+}
+
+func TestRootCommandLogsShutdownError(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	ctx, cleanup, meta, err := adapterlogging.NewContextFromEnv(context.Background(), "v0.1.0-test")
+	require.NoError(t, err)
+	defer cleanup()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	require.NoError(t, os.WriteFile(path, []byte("[bitwarden]\nemail = 'test@example.com'\n"), 0o600))
+
+	svc := &shutdownTrackingService{fakeAuthService: newFakeAuthService(), shutdownErr: errors.New("boom")}
+	opts := Options{
+		Version:    "v0.1.0-test",
+		ConfigPath: path,
+		ComposeService: func(context.Context, *coreconfig.Config, string, string) (in.AppService, error) {
+			return svc, nil
+		},
+		RunOverlay: func(context.Context, in.AppService) error { return nil },
+	}
+
+	_, _, err = executeCmdWithContext(t, ctx, opts, []string{})
+	require.NoError(t, err)
+
+	cleanup()
+	data, err := os.ReadFile(meta.Path)
+	require.NoError(t, err)
+	logs := string(data)
+	assert.Contains(t, logs, "service shutdown failed")
+	assert.Contains(t, logs, "shutdown")
 }
 
 func TestConfigPathPrintsTempPath(t *testing.T) {

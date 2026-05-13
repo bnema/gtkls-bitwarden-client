@@ -2601,11 +2601,16 @@ func (s *Service) resolveConflictCacheOnly(ctx context.Context, key []byte, conf
 	}
 
 	s.mu.Lock()
+	removed := false
 	for i, c := range s.conflicts {
 		if c.ID == conflictID {
 			s.conflicts = append(s.conflicts[:i], s.conflicts[i+1:]...)
+			removed = true
 			break
 		}
+	}
+	if !removed {
+		// Already absent: treat cache-only conflict cleanup as idempotent.
 	}
 	s.pendingRemoteItems = nil
 	s.pendingRemoteFolders = nil

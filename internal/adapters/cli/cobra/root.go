@@ -77,7 +77,12 @@ func NewRootCommand(opts Options) *cobra.Command {
 			defer func() {
 				shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(cmd.Context()), 30*time.Second)
 				defer cancel()
-				_ = svc.Shutdown(shutdownCtx)
+				if shutdownErr := svc.Shutdown(shutdownCtx); shutdownErr != nil {
+					log.Error().
+						Str(zerowrap.FieldOperation, "shutdown").
+						Str("error_kind", safelog.SafeErrorKind(shutdownErr)).
+						Msg("service shutdown failed")
+				}
 			}()
 			log.Info().Str(zerowrap.FieldOperation, "compose_service").Msg("service composition finished")
 

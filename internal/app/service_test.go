@@ -1633,6 +1633,77 @@ func TestResolveConflictKeepRemoteCacheOnlyUpdatesEncryptedCache(t *testing.T) {
 	svc.mu.Unlock()
 }
 
+func TestResolveConflictCacheOnlyCleanupIsIdempotent(t *testing.T) {
+	cacheKey := []byte("test-cache-key-32-bytes-long!")
+	conflictID := "m1_item-1"
+	localItem := vault.Item{
+		ID:           "item-1",
+		Name:         "Local Version",
+		Type:         vault.ItemTypeLogin,
+		RevisionDate: time.Now().Add(-time.Hour),
+		SyncStatus:   vault.SyncStatusConflict,
+		ConflictID:   conflictID,
+	}
+	remoteItem := vault.Item{
+		ID:           "item-1",
+		Name:         "Remote Version",
+		Type:         vault.ItemTypeLogin,
+		RevisionDate: time.Now(),
+	}
+	payload, err := json.Marshal(vault.Item{ID: localItem.ID, Name: localItem.Name, Type: localItem.Type})
+	require.NoError(t, err)
+
+	snap := buildCacheSnapshotWithKeyAndOutbox(t, cacheKey, []vault.Item{localItem}, nil, []coresync.OutboxMutation{{
+		ID:        "m1",
+		Kind:      coresync.MutationUpdate,
+		ItemID:    localItem.ID,
+		CreatedAt: time.Now().Add(-30 * time.Minute),
+		Payload:   payload,
+	}})
+	cacheStore := &fakeCache{data: &snap, saveStarted: make(chan struct{}, 1), saveBlock: make(chan struct{})}
+	svc := NewService(Deps{
+		Config:    coreconfig.Default(),
+		Remote:    &fakeRemote{syncItems: []vault.Item{remoteItem}, syncRev: "rev-2"},
+		Cache:     cacheStore,
+		SecretBox: &fakeSecretBox{},
+	})
+
+	svc.mu.Lock()
+	svc.state = auth.LockStateUnlocked
+	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
+	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.conflicts = []coresync.Conflict{{
+		ID:         conflictID,
+		ItemID:     localItem.ID,
+		MutationID: "m1",
+		Reason:     coresync.ConflictBothModified,
+	}}
+	svc.mu.Unlock()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- svc.ResolveConflict(context.Background(), conflictID, coresync.ResolutionKeepRemote)
+	}()
+
+	select {
+	case <-cacheStore.saveStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for cache save to start")
+	}
+
+	svc.mu.Lock()
+	svc.conflicts = nil
+	svc.mu.Unlock()
+	close(cacheStore.saveBlock)
+
+	select {
+	case err := <-errCh:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for cache-only conflict resolution")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Event safety tests
 // ---------------------------------------------------------------------------
