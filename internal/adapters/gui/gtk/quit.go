@@ -11,9 +11,9 @@ type softLocker interface {
 	SoftLock(context.Context) error
 }
 
-func softLockBeforeQuit(ctx context.Context, locker softLocker, clear func(), quit func(), logf func(error)) {
-	if clear != nil {
-		clear()
+func softLockBeforeQuit(ctx context.Context, locker softLocker, clearFn func(), quit func(), logf func(error)) {
+	if clearFn != nil {
+		clearFn()
 	}
 	if locker != nil {
 		if err := locker.SoftLock(context.WithoutCancel(ctx)); err != nil && logf != nil {

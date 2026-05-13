@@ -9,39 +9,39 @@ import (
 )
 
 type fakeSoftLockService struct {
-	calls []string
+	trace *[]string
 	err   error
 }
 
 func (f *fakeSoftLockService) SoftLock(context.Context) error {
-	f.calls = append(f.calls, "softlock")
+	if f.trace != nil {
+		*f.trace = append(*f.trace, "softlock")
+	}
 	return f.err
 }
 
 func TestSoftLockBeforeQuitRunsClearThenSoftLockThenQuit(t *testing.T) {
-	svc := &fakeSoftLockService{}
-	calls := make([]string, 0, 3)
+	trace := make([]string, 0, 3)
+	svc := &fakeSoftLockService{trace: &trace}
 
 	softLockBeforeQuit(context.Background(), svc,
-		func() { calls = append(calls, "clear") },
-		func() { calls = append(calls, "quit") },
-		func(error) { calls = append(calls, "log") },
+		func() { trace = append(trace, "clear") },
+		func() { trace = append(trace, "quit") },
+		func(error) { trace = append(trace, "log") },
 	)
 
-	require.Equal(t, []string{"clear", "quit"}, calls)
-	require.Equal(t, []string{"softlock"}, svc.calls)
+	require.Equal(t, []string{"clear", "softlock", "quit"}, trace)
 }
 
 func TestSoftLockBeforeQuitStillQuitsOnSoftLockError(t *testing.T) {
-	svc := &fakeSoftLockService{err: errors.New("boom")}
-	calls := make([]string, 0, 3)
+	trace := make([]string, 0, 4)
+	svc := &fakeSoftLockService{trace: &trace, err: errors.New("boom")}
 
 	softLockBeforeQuit(context.Background(), svc,
-		func() { calls = append(calls, "clear") },
-		func() { calls = append(calls, "quit") },
-		func(error) { calls = append(calls, "log") },
+		func() { trace = append(trace, "clear") },
+		func() { trace = append(trace, "quit") },
+		func(error) { trace = append(trace, "log") },
 	)
 
-	require.Equal(t, []string{"clear", "log", "quit"}, calls)
-	require.Equal(t, []string{"softlock"}, svc.calls)
+	require.Equal(t, []string{"clear", "softlock", "log", "quit"}, trace)
 }

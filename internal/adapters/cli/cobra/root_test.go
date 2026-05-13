@@ -171,10 +171,14 @@ ui_scale = 5.0
 type shutdownTrackingService struct {
 	*fakeAuthService
 	shutdownCalls int
+	events        *[]string
 }
 
 func (s *shutdownTrackingService) Shutdown(context.Context) error {
 	s.shutdownCalls++
+	if s.events != nil {
+		*s.events = append(*s.events, "shutdown")
+	}
 	return nil
 }
 
@@ -183,7 +187,8 @@ func TestRootCommandShutsServiceDownAfterOverlayReturns(t *testing.T) {
 	path := filepath.Join(dir, "config.toml")
 	require.NoError(t, os.WriteFile(path, []byte("[bitwarden]\nemail = 'test@example.com'\n"), 0o600))
 
-	svc := &shutdownTrackingService{fakeAuthService: newFakeAuthService()}
+	events := make([]string, 0, 2)
+	svc := &shutdownTrackingService{fakeAuthService: newFakeAuthService(), events: &events}
 	opts := Options{
 		Version:    "v0.1.0-test",
 		ConfigPath: path,
@@ -191,6 +196,7 @@ func TestRootCommandShutsServiceDownAfterOverlayReturns(t *testing.T) {
 			return svc, nil
 		},
 		RunOverlay: func(context.Context, in.AppService) error {
+			events = append(events, "overlay")
 			return nil
 		},
 	}
@@ -198,6 +204,7 @@ func TestRootCommandShutsServiceDownAfterOverlayReturns(t *testing.T) {
 	_, err := executeCmd(t, opts, []string{})
 	require.NoError(t, err)
 	require.Equal(t, 1, svc.shutdownCalls)
+	require.Equal(t, []string{"overlay", "shutdown"}, events)
 }
 
 func TestConfigPathPrintsTempPath(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bnema/zerowrap"
 	"github.com/spf13/cobra"
@@ -73,7 +74,11 @@ func NewRootCommand(opts Options) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("compose service: %w", err)
 			}
-			defer func() { _ = svc.Shutdown(context.WithoutCancel(cmd.Context())) }()
+			defer func() {
+				shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(cmd.Context()), 30*time.Second)
+				defer cancel()
+				_ = svc.Shutdown(shutdownCtx)
+			}()
 			log.Info().Str(zerowrap.FieldOperation, "compose_service").Msg("service composition finished")
 
 			// Start config hot-reload watcher using the command's context so that

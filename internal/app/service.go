@@ -2601,12 +2601,10 @@ func (s *Service) resolveConflictCacheOnly(ctx context.Context, key []byte, conf
 	}
 
 	s.mu.Lock()
-	if idx >= 0 {
-		for i, c := range s.conflicts {
-			if c.ID == conflictID {
-				s.conflicts = append(s.conflicts[:i], s.conflicts[i+1:]...)
-				break
-			}
+	for i, c := range s.conflicts {
+		if c.ID == conflictID {
+			s.conflicts = append(s.conflicts[:i], s.conflicts[i+1:]...)
+			break
 		}
 	}
 	s.pendingRemoteItems = nil
