@@ -1,5 +1,5 @@
-github.com/bnema/bitwarden-go-sdk v0.3.0 h1:ko/kmB3efpPayWs+tqBY4uIYrOF++S87GBTBVPW/laE=
-github.com/bnema/bitwarden-go-sdk v0.3.0/go.mod h1:z9ZZyeUnDC1CZ/TwboEJ7fsaEmLwnqWIozdbkG5+JCY=
+github.com/bnema/bitwarden-go-sdk v0.4.0 h1:O7zAWX/++bZl5WDwZ5Fa8OKnBtkuJe9xDK1+7dN6CQo=
+github.com/bnema/bitwarden-go-sdk v0.4.0/go.mod h1:z9ZZyeUnDC1CZ/TwboEJ7fsaEmLwnqWIozdbkG5+JCY=
 github.com/bnema/purego v0.11.0-bnema.2 h1:7pzcdOJ8bGtLrCz6V582oyleP6css1ICQoGgj+/Ve4o=
 github.com/bnema/purego v0.11.0-bnema.2/go.mod h1:5BnOIUj+0fvk/vwv45iottFoGfkDT7cnLXnpM2s6Hng=
 github.com/bnema/puregotk v0.5.1 h1:Qgk12PHu1P5bsVD3tZ0io2a9wn3+dN60qZvKnkXASY0=
