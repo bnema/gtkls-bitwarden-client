@@ -23,10 +23,11 @@ const (
 )
 
 type decryptedCacheSnapshot struct {
-	Salt    []byte
-	Items   []vault.Item
-	Folders []vault.Folder
-	Outbox  []coresync.OutboxMutation
+	Salt      []byte
+	Items     []vault.Item
+	Folders   []vault.Folder
+	Outbox    []coresync.OutboxMutation
+	Conflicts []coresync.Conflict
 }
 
 func (s *Service) SetBackgroundSyncSuspended(ctx context.Context, suspended bool) error {
@@ -90,11 +91,16 @@ func (s *Service) loadDecryptedCacheSnapshot(ctx context.Context, key []byte) (d
 	if err != nil {
 		return snap, err
 	}
+	conflicts, err := s.loadCachedConflictsWithKey(ctx, key)
+	if err != nil {
+		return snap, err
+	}
 
 	snap.Salt = append([]byte(nil), cached.CacheKeySalt...)
 	snap.Items = append([]vault.Item(nil), items...)
 	snap.Folders = append([]vault.Folder(nil), folders...)
 	snap.Outbox = append([]coresync.OutboxMutation(nil), outbox...)
+	snap.Conflicts = append([]coresync.Conflict(nil), conflicts...)
 	return snap, nil
 }
 
@@ -132,7 +138,7 @@ func (s *Service) saveExplicitCacheSnapshot(ctx context.Context, key []byte, sna
 		return fmt.Errorf("save cache: no cache salt available")
 	}
 
-	if err := saveEncryptedSnapshot(cleanupCtx, s.deps.Cache, s.deps.SecretBox, key, salt, accountHash, snap.Items, snap.Folders, snap.Outbox); err != nil {
+	if err := saveEncryptedSnapshot(cleanupCtx, s.deps.Cache, s.deps.SecretBox, key, salt, accountHash, snap.Items, snap.Folders, snap.Outbox, snap.Conflicts); err != nil {
 		return err
 	}
 
@@ -223,6 +229,7 @@ func (s *Service) syncOnceCacheOnly(ctx context.Context) {
 		s.pendingRemoteFolders = nil
 		s.mu.Unlock()
 
+		snap.Conflicts = append([]coresync.Conflict(nil), conflicts...)
 		for _, conflict := range conflicts {
 			for i := range snap.Items {
 				if snap.Items[i].ID == conflict.ItemID {
@@ -262,6 +269,7 @@ func (s *Service) syncOnceCacheOnly(ctx context.Context) {
 	snap.Items = append(snap.Items[:0], remoteItems...)
 	snap.Folders = append(snap.Folders[:0], remoteFolders...)
 	snap.Outbox = nil
+	snap.Conflicts = nil
 	if err := s.saveExplicitCacheSnapshot(ctx, key, snap, expectedSeq); err != nil {
 		s.emit(SyncFailed, cerrors.ShortMessage(err))
 		return

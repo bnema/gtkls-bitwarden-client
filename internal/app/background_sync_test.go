@@ -307,6 +307,12 @@ func TestSyncOnceCacheOnlyMarksConflictsInEncryptedCache(t *testing.T) {
 	require.Equal(t, pendingUpdate.ID, outbox[0].ID)
 	require.Equal(t, pendingUpdate.ItemID, outbox[0].ItemID)
 
+	persistedConflicts, err := svc.loadCachedConflictsWithKey(context.Background(), cacheKey)
+	require.NoError(t, err)
+	require.Len(t, persistedConflicts, 1)
+	require.Equal(t, localItem.ID, persistedConflicts[0].ItemID)
+	require.Equal(t, items[0].ConflictID, persistedConflicts[0].ID)
+
 	svc.mu.Lock()
 	require.Len(t, svc.conflicts, 1)
 	require.Equal(t, localItem.ID, svc.conflicts[0].ItemID)

@@ -15,11 +15,12 @@ type Snapshot struct {
 }
 
 type PlainSnapshot struct {
-	AccountHash  string
-	LastRevision string
-	SavedAt      time.Time
-	CacheKeySalt []byte
-	ItemsJSON    []byte
-	FoldersJSON  []byte
-	OutboxJSON   []byte
+	AccountHash   string
+	LastRevision  string
+	SavedAt       time.Time
+	CacheKeySalt  []byte
+	ItemsJSON     []byte
+	FoldersJSON   []byte
+	OutboxJSON    []byte
+	ConflictsJSON []byte
 }

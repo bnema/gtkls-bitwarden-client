@@ -389,11 +389,11 @@ func (c *fakeCache) Path() string {
 type fakeSecretBox struct{}
 
 func (f *fakeSecretBox) Seal(plaintext, key []byte) ([]byte, error) {
-	return plaintext, nil
+	return append([]byte(nil), plaintext...), nil
 }
 
 func (f *fakeSecretBox) Open(ciphertext, key []byte) ([]byte, error) {
-	return ciphertext, nil
+	return append([]byte(nil), ciphertext...), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -3134,6 +3134,70 @@ func TestUnlockWithPINRestoresSessionAndInstallsCacheKey(t *testing.T) {
 	cs.mu.Unlock()
 }
 
+func TestUnlockWithPINRestoresPersistedConflictsFromCache(t *testing.T) {
+	email := "user@example.com"
+	pin := "1234"
+	ref := session.AccountRef{Email: email, ServerURL: "https://vault.bitwarden.com"}
+	bootID := "boot-abc"
+	conflictID := "m1_item-1"
+
+	validBundle := session.TokenBundle{
+		AccountID:    "acct-1",
+		Email:        ref.Email,
+		ServerURL:    ref.ServerURL,
+		AccessToken:  []byte("at"),
+		RefreshToken: []byte("rt"),
+		TokenType:    "Bearer",
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+	envelope := session.UnlockEnvelope{
+		Version:        session.UnlockEnvelopeVersion,
+		Account:        ref,
+		AccountID:      "acct-1",
+		BootID:         bootID,
+		ExpiresAt:      time.Now().Add(time.Hour),
+		PINMaxFailures: 5,
+	}
+	material := session.UnlockMaterial{CacheKey: []byte("cache-key-from-material"), UserKey: []byte("user-key")}
+	localItem := vault.Item{ID: "item-1", Name: "Local Version", Type: vault.ItemTypeLogin, SyncStatus: vault.SyncStatusConflict, ConflictID: conflictID}
+	outbox := []coresync.OutboxMutation{{
+		ID:        "m1",
+		Kind:      coresync.MutationUpdate,
+		ItemID:    localItem.ID,
+		CreatedAt: time.Now().Add(-time.Minute),
+		Payload:   []byte(`{"name":"Local Version"}`),
+	}}
+	conflicts := []coresync.Conflict{{
+		ID:         conflictID,
+		ItemID:     localItem.ID,
+		MutationID: outbox[0].ID,
+		Reason:     coresync.ConflictBothModified,
+	}}
+	snap := buildCacheSnapshotWithKeyAndOutboxAndConflicts(t, material.CacheKey, []vault.Item{localItem}, nil, outbox, conflicts)
+
+	cfg := coreconfig.Default()
+	cfg.Bitwarden.Email = email
+	cfg.Security.BackgroundSync.Enabled = false
+
+	svc := NewService(Deps{
+		Config:      cfg,
+		Remote:      &fakeRemote{},
+		Cache:       &fakeCache{data: &snap},
+		SecretBox:   &fakeSecretBox{},
+		Credentials: &fakeCredentialStore{tokenBundle: validBundle, envelope: envelope},
+		BootID:      &fakeBootID{id: bootID},
+		PINEnvelope: &fakePINEnvelope{openMaterial: material, openUpdated: envelope.Clone()},
+	})
+
+	require.NoError(t, svc.UnlockWithPIN(context.Background(), email, pin))
+
+	svc.mu.Lock()
+	require.Len(t, svc.conflicts, 1)
+	require.Equal(t, conflictID, svc.conflicts[0].ID)
+	require.Equal(t, localItem.ID, svc.conflicts[0].ItemID)
+	svc.mu.Unlock()
+}
+
 func TestUnlockWithPINWrongPINRecordsFailure(t *testing.T) {
 	email := "user@example.com"
 	pin := "wrong-pin"
@@ -3731,10 +3795,14 @@ func TestUnlockWithPINRequiresDeps(t *testing.T) {
 // Uses fakeSecretBox so encryption is identity; the key is recorded but
 // decrypt always succeeds with any matching-length key.
 func buildCacheSnapshotWithKey(t *testing.T, key []byte, items []vault.Item, folders []vault.Folder) cache.Snapshot {
-	return buildCacheSnapshotWithKeyAndOutbox(t, key, items, folders, nil)
+	return buildCacheSnapshotWithKeyAndOutboxAndConflicts(t, key, items, folders, nil, nil)
 }
 
 func buildCacheSnapshotWithKeyAndOutbox(t *testing.T, key []byte, items []vault.Item, folders []vault.Folder, outbox []coresync.OutboxMutation) cache.Snapshot {
+	return buildCacheSnapshotWithKeyAndOutboxAndConflicts(t, key, items, folders, outbox, nil)
+}
+
+func buildCacheSnapshotWithKeyAndOutboxAndConflicts(t *testing.T, key []byte, items []vault.Item, folders []vault.Folder, outbox []coresync.OutboxMutation, conflicts []coresync.Conflict) cache.Snapshot {
 	t.Helper()
 
 	itemsJSON, err := json.Marshal(items)
@@ -3749,14 +3817,21 @@ func buildCacheSnapshotWithKeyAndOutbox(t *testing.T, key []byte, items []vault.
 		require.NoError(t, err)
 	}
 
+	var conflictsJSON []byte
+	if conflicts != nil {
+		conflictsJSON, err = json.Marshal(conflicts)
+		require.NoError(t, err)
+	}
+
 	salt := []byte("0123456789abcdef")
 	plain := cache.PlainSnapshot{
-		AccountHash:  "test-account-hash",
-		SavedAt:      time.Now(),
-		CacheKeySalt: append([]byte(nil), salt...),
-		ItemsJSON:    itemsJSON,
-		FoldersJSON:  foldersJSON,
-		OutboxJSON:   outboxJSON,
+		AccountHash:   "test-account-hash",
+		SavedAt:       time.Now(),
+		CacheKeySalt:  append([]byte(nil), salt...),
+		ItemsJSON:     itemsJSON,
+		FoldersJSON:   foldersJSON,
+		OutboxJSON:    outboxJSON,
+		ConflictsJSON: conflictsJSON,
 	}
 
 	plainJSON, err := json.Marshal(plain)

@@ -491,6 +491,14 @@ func (s *Service) UnlockWithPIN(ctx context.Context, email, pin string) (retErr 
 	}
 	s.mu.Unlock()
 
+	if cachedConflicts, loadErr := s.loadCachedConflictsWithKey(ctx, material.CacheKey); loadErr == nil && len(cachedConflicts) > 0 {
+		s.mu.Lock()
+		if s.lifecycle == token && s.state == auth.LockStateUnlocked {
+			s.conflicts = append([]coresync.Conflict(nil), cachedConflicts...)
+		}
+		s.mu.Unlock()
+	}
+
 	if startWorker {
 		s.startBackgroundSyncWorker(workerCtx, backgroundSyncCacheOnly)
 	}
@@ -852,7 +860,7 @@ func (s *Service) unlock(ctx context.Context, email, password string, prompt aut
 
 	// Load cache data: derives key via Argon2id using salt from the encrypted
 	// snapshot or a fresh random salt for first-run/no-cache flows.
-	loadedItems, loadedFolders, outboxMutations, cacheKey, cacheSalt, loaded, err := s.loadCacheData(ctx, password)
+	loadedItems, loadedFolders, outboxMutations, loadedConflicts, cacheKey, cacheSalt, loaded, err := s.loadCacheData(ctx, password)
 	if err != nil {
 		// Non-fatal: we can still unlock without cache.
 		s.emit(CacheLoaded, fmt.Sprintf("cache load skipped: %v", err))
@@ -875,6 +883,7 @@ func (s *Service) unlock(ctx context.Context, email, password string, prompt aut
 		s.items = loadedItems
 		s.folders = loadedFolders
 		s.outbox = outboxMutations
+		s.conflicts = loadedConflicts
 	}
 	// Copy cache key for outbox persistence.
 	s.cacheKey = make([]byte, len(cacheKey))
@@ -910,7 +919,7 @@ func (s *Service) unlock(ctx context.Context, email, password string, prompt aut
 // loadCacheData loads and decrypts a cached vault snapshot, returning the
 // items, folders, outbox mutations, derived cache key, salt, and whether
 // data was loaded. It does NOT install state on the service.
-func (s *Service) loadCacheData(ctx context.Context, password string) (items []vault.Item, folders []vault.Folder, outbox []coresync.OutboxMutation, key []byte, salt []byte, loaded bool, err error) {
+func (s *Service) loadCacheData(ctx context.Context, password string) (items []vault.Item, folders []vault.Folder, outbox []coresync.OutboxMutation, conflicts []coresync.Conflict, key []byte, salt []byte, loaded bool, err error) {
 	log, started := logAppServiceStart(ctx, "cache_load_data")
 	defer func() {
 		logAppServiceFinishCount(log, started, err, len(items)+len(folders)+len(outbox))
@@ -918,28 +927,28 @@ func (s *Service) loadCacheData(ctx context.Context, password string) (items []v
 
 	salt, err = newCacheSalt()
 	if err != nil {
-		return nil, nil, nil, nil, nil, false, fmt.Errorf("cache salt: %w", err)
+		return nil, nil, nil, nil, nil, nil, false, fmt.Errorf("cache salt: %w", err)
 	}
 	key = deriveCacheKey(password, salt)
 
 	if s.deps.Cache == nil {
-		return nil, nil, nil, key, salt, false, nil
+		return nil, nil, nil, nil, key, salt, false, nil
 	}
 
 	snap, snapErr := s.deps.Cache.Load(ctx)
 	if snapErr != nil {
 		if errors.Is(snapErr, os.ErrNotExist) {
-			return nil, nil, nil, key, salt, false, nil
+			return nil, nil, nil, nil, key, salt, false, nil
 		}
-		return nil, nil, nil, nil, nil, false, fmt.Errorf("cache load: %w", snapErr)
+		return nil, nil, nil, nil, nil, nil, false, fmt.Errorf("cache load: %w", snapErr)
 	}
 
 	if snap.Version == 0 && snap.AccountHash == "" && len(snap.VaultCiphertext) == 0 {
-		return nil, nil, nil, key, salt, false, nil
+		return nil, nil, nil, nil, key, salt, false, nil
 	}
 
 	if err := cache.ValidateSnapshot(snap); err != nil {
-		return nil, nil, nil, nil, nil, false, fmt.Errorf("cache validation: %w", err)
+		return nil, nil, nil, nil, nil, nil, false, fmt.Errorf("cache validation: %w", err)
 	}
 
 	// Prefer the persisted random salt from the encrypted cache snapshot. Fresh
@@ -953,10 +962,10 @@ func (s *Service) loadCacheData(ctx context.Context, password string) (items []v
 	if s.deps.SecretBox != nil {
 		plaintext, err = s.deps.SecretBox.Open(snap.VaultCiphertext, key)
 		if err != nil {
-			return nil, nil, nil, nil, nil, false, fmt.Errorf("cache decrypt: %w", err)
+			return nil, nil, nil, nil, nil, nil, false, fmt.Errorf("cache decrypt: %w", err)
 		}
 	} else {
-		return nil, nil, nil, nil, nil, false, fmt.Errorf("cache decrypt: secretbox unavailable")
+		return nil, nil, nil, nil, nil, nil, false, fmt.Errorf("cache decrypt: secretbox unavailable")
 	}
 
 	// Zero plaintext bytes on any return path after SecretBox.Open succeeds,
@@ -965,29 +974,35 @@ func (s *Service) loadCacheData(ctx context.Context, password string) (items []v
 
 	var plain cache.PlainSnapshot
 	if err := json.Unmarshal(plaintext, &plain); err != nil {
-		return nil, nil, nil, nil, nil, false, fmt.Errorf("cache decode: %w", err)
+		return nil, nil, nil, nil, nil, nil, false, fmt.Errorf("cache decode: %w", err)
 	}
 	defer func() {
 		clear(plain.ItemsJSON)
 		clear(plain.FoldersJSON)
 		clear(plain.OutboxJSON)
+		clear(plain.ConflictsJSON)
 	}()
 
 	if err := json.Unmarshal(plain.ItemsJSON, &items); err != nil {
-		return nil, nil, nil, nil, nil, false, fmt.Errorf("cache items decode: %w", err)
+		return nil, nil, nil, nil, nil, nil, false, fmt.Errorf("cache items decode: %w", err)
 	}
 
 	if err := json.Unmarshal(plain.FoldersJSON, &folders); err != nil {
-		return nil, nil, nil, nil, nil, false, fmt.Errorf("cache folders decode: %w", err)
+		return nil, nil, nil, nil, nil, nil, false, fmt.Errorf("cache folders decode: %w", err)
 	}
 
 	// Decode outbox from PlainSnapshot.OutboxJSON.
 	if len(plain.OutboxJSON) > 0 {
 		var cachedOutbox []coresync.OutboxMutation
 		if err := json.Unmarshal(plain.OutboxJSON, &cachedOutbox); err != nil {
-			return nil, nil, nil, nil, nil, false, fmt.Errorf("cache outbox decode: %w", err)
+			return nil, nil, nil, nil, nil, nil, false, fmt.Errorf("cache outbox decode: %w", err)
 		}
 		outbox = cachedOutbox
+	}
+	if len(plain.ConflictsJSON) > 0 {
+		if err := json.Unmarshal(plain.ConflictsJSON, &conflicts); err != nil {
+			return nil, nil, nil, nil, nil, nil, false, fmt.Errorf("cache conflicts decode: %w", err)
+		}
 	}
 
 	// Load outbox from deps.Outbox if available.
@@ -1006,7 +1021,7 @@ func (s *Service) loadCacheData(ctx context.Context, password string) (items []v
 
 	outbox = dedupeOutboxMutations(outbox)
 
-	return items, folders, outbox, key, salt, true, nil
+	return items, folders, outbox, conflicts, key, salt, true, nil
 }
 
 // loadCachedVaultWithKey loads and decrypts the cache snapshot using the
@@ -1092,6 +1107,57 @@ func (s *Service) loadCachedVaultWithKey(ctx context.Context, key []byte) (items
 	outbox = loadStandaloneOutbox(outbox)
 
 	return items, folders, outbox, nil
+}
+
+func (s *Service) loadCachedConflictsWithKey(ctx context.Context, key []byte) (conflicts []coresync.Conflict, retErr error) {
+	log, started := logAppServiceStart(ctx, "cache_load_conflicts_with_material")
+	defer func() { logAppServiceFinishCount(log, started, retErr, len(conflicts)) }()
+
+	if len(key) == 0 {
+		return nil, nil
+	}
+	if s.deps.Cache == nil || s.deps.SecretBox == nil {
+		return nil, nil
+	}
+
+	snap, err := s.deps.Cache.Load(ctx)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("cache load: %w", err)
+	}
+	if snap.Version == 0 && snap.AccountHash == "" && len(snap.VaultCiphertext) == 0 {
+		return nil, nil
+	}
+	if err := cache.ValidateSnapshot(snap); err != nil {
+		return nil, fmt.Errorf("cache validation: %w", err)
+	}
+
+	plaintext, err := s.deps.SecretBox.Open(snap.VaultCiphertext, key)
+	if err != nil {
+		return nil, fmt.Errorf("cache decrypt: %w", err)
+	}
+	defer clear(plaintext)
+
+	var plain cache.PlainSnapshot
+	if err := json.Unmarshal(plaintext, &plain); err != nil {
+		return nil, fmt.Errorf("cache decode: %w", err)
+	}
+	defer func() {
+		clear(plain.ItemsJSON)
+		clear(plain.FoldersJSON)
+		clear(plain.OutboxJSON)
+		clear(plain.ConflictsJSON)
+	}()
+
+	if len(plain.ConflictsJSON) == 0 {
+		return nil, nil
+	}
+	if err := json.Unmarshal(plain.ConflictsJSON, &conflicts); err != nil {
+		return nil, fmt.Errorf("cache conflicts decode: %w", err)
+	}
+	return conflicts, nil
 }
 
 // Lock transitions the service from unlocked to locked. It is a compatibility
@@ -1494,6 +1560,8 @@ func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutateItems 
 	copy(foldersSnap, s.folders)
 	outboxSnap := make([]coresync.OutboxMutation, len(s.outbox))
 	copy(outboxSnap, s.outbox)
+	conflictsSnap := make([]coresync.Conflict, len(s.conflicts))
+	copy(conflictsSnap, s.conflicts)
 	outboxStore := s.deps.Outbox
 	cacheStore := s.deps.Cache
 	box := s.deps.SecretBox
@@ -1558,7 +1626,7 @@ func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutateItems 
 				foldersSnap = loadedFolders
 			}
 
-			err := saveEncryptedSnapshot(cleanupCtx, cacheStore, box, key, salt, accountHash, itemsSnap, foldersSnap, outboxSnap)
+			err := saveEncryptedSnapshot(cleanupCtx, cacheStore, box, key, salt, accountHash, itemsSnap, foldersSnap, outboxSnap, conflictsSnap)
 			logAppServiceFinishCount(cacheLog, cacheStarted, err, len(itemsSnap)+len(foldersSnap)+len(outboxSnap))
 		}
 	})
@@ -1882,7 +1950,7 @@ func saveEncryptedSnapshot(ctx context.Context, store interface {
 	Save(context.Context, cache.Snapshot) error
 }, box interface {
 	Seal([]byte, []byte) ([]byte, error)
-}, key, salt []byte, accountHash string, items []vault.Item, folders []vault.Folder, outbox []coresync.OutboxMutation) error {
+}, key, salt []byte, accountHash string, items []vault.Item, folders []vault.Folder, outbox []coresync.OutboxMutation, conflicts []coresync.Conflict) error {
 	itemsJSON, err := json.Marshal(items)
 	if err != nil {
 		return fmt.Errorf("cache marshal items: %w", err)
@@ -1895,14 +1963,19 @@ func saveEncryptedSnapshot(ctx context.Context, store interface {
 	if err != nil {
 		return fmt.Errorf("cache marshal outbox: %w", err)
 	}
+	conflictsJSON, err := json.Marshal(conflicts)
+	if err != nil {
+		return fmt.Errorf("cache marshal conflicts: %w", err)
+	}
 
 	plain := cache.PlainSnapshot{
-		AccountHash:  accountHash,
-		SavedAt:      time.Now().UTC(),
-		CacheKeySalt: salt,
-		ItemsJSON:    itemsJSON,
-		FoldersJSON:  foldersJSON,
-		OutboxJSON:   outboxJSON,
+		AccountHash:   accountHash,
+		SavedAt:       time.Now().UTC(),
+		CacheKeySalt:  salt,
+		ItemsJSON:     itemsJSON,
+		FoldersJSON:   foldersJSON,
+		OutboxJSON:    outboxJSON,
+		ConflictsJSON: conflictsJSON,
 	}
 	plainJSON, err := json.Marshal(plain)
 	if err != nil {
@@ -2487,6 +2560,12 @@ func (s *Service) resolveConflictCacheOnly(ctx context.Context, key []byte, conf
 		return cerrors.ErrNotFound
 	}
 	conflict := s.conflicts[idx]
+	remainingConflicts := make([]coresync.Conflict, 0, len(s.conflicts)-1)
+	for _, c := range s.conflicts {
+		if c.ID != conflictID {
+			remainingConflicts = append(remainingConflicts, c)
+		}
+	}
 	expectedSeq := s.saveSeq
 	s.mu.Unlock()
 
@@ -2500,6 +2579,7 @@ func (s *Service) resolveConflictCacheOnly(ctx context.Context, key []byte, conf
 	snap.Items = append([]vault.Item(nil), snap.Items...)
 	snap.Folders = append([]vault.Folder(nil), snap.Folders...)
 	snap.Outbox = append([]coresync.OutboxMutation(nil), snap.Outbox...)
+	snap.Conflicts = append([]coresync.Conflict(nil), remainingConflicts...)
 
 	var remoteItems []vault.Item
 	if resolution == coresync.ResolutionKeepRemote || resolution == coresync.ResolutionDuplicateLocal {
