@@ -1758,6 +1758,8 @@ func (v *View) renderForm(item vault.Item) {
 	scrollWin.SetMinContentHeight(contentHeight)
 	scrollWin.SetMaxContentHeight(contentHeight)
 	scrollWin.SetPropagateNaturalHeight(true)
+	scrollWin.SetPropagateNaturalWidth(false)
+	scrollWin.SetMaxContentWidth(defaultOmniboxWidth)
 	formContent := gtklib.NewBox(gtklib.OrientationVerticalValue, 4)
 	scrollWin.SetChild(&formContent.Widget)
 	v.formBox.Append(&scrollWin.Widget)
