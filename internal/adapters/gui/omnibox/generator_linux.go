@@ -7,6 +7,7 @@ import (
 
 	gtklib "github.com/bnema/puregotk/v4/gtk"
 
+	clipadapter "github.com/bnema/gtkls-bitwarden-client/internal/adapters/clipboard"
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/passwordgen"
 )
 
@@ -124,7 +125,7 @@ func (v *View) generatePasswordFromControls() {
 		return
 	}
 
-	password, err := passwordgen.Generate(v.generatorOptions())
+	password, err := v.generatePasswordFromCurrentOptions()
 	if err != nil {
 		v.mu.Lock()
 		v.state.SetStatus(Status{Text: err.Error(), Error: err.Error()})
@@ -138,6 +139,10 @@ func (v *View) generatePasswordFromControls() {
 	v.state.SetStatus(Status{Text: "Generated password"})
 	v.mu.Unlock()
 	v.renderStatus()
+}
+
+func (v *View) generatePasswordFromCurrentOptions() (string, error) {
+	return passwordgen.Generate(v.generatorOptions())
 }
 
 func (v *View) copyGeneratedPassword() {
@@ -164,7 +169,7 @@ func (v *View) copyGeneratedPassword() {
 	}
 
 	go func() {
-		if err := v.clipboard.Set(v.ctx, text, ttl); err != nil {
+		if err := v.copyGeneratedPasswordText(text, ttl); err != nil {
 			logOverlayError(v.ctx, "copy_generated_password", err)
 			idleAddOnce(func() {
 				v.mu.Lock()
@@ -182,4 +187,19 @@ func (v *View) copyGeneratedPassword() {
 			v.renderStatus()
 		})
 	}()
+}
+
+func (v *View) copyGeneratedPasswordText(text string, ttl time.Duration) error {
+	writer := clipadapter.NewSystemWriter()
+	if err := v.writeSystemClipboard(writer, text); err == nil {
+		if ttl > 0 {
+			time.AfterFunc(ttl, func() {
+				if err := v.writeSystemClipboard(writer, ""); err != nil {
+					logOverlayError(v.ctx, "clear_generated_password", err)
+				}
+			})
+		}
+		return nil
+	}
+	return v.clipboard.Set(v.ctx, text, ttl)
 }

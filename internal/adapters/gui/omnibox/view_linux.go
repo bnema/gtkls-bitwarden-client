@@ -119,6 +119,30 @@ func isUserCanceled(err error) bool {
 	return errors.Is(err, context.Canceled)
 }
 
+func (v *View) writeSystemClipboard(writer clipadapter.SystemWriter, text string) error {
+	ctx, cancel := context.WithTimeout(v.ctx, 5*time.Second)
+	defer cancel()
+	return writer.WriteClipboard(ctx, text)
+}
+
+func (v *View) writeGTKClipboard(text string) error {
+	done := make(chan error, 1)
+	idleAddOnce(func() {
+		if v.Root == nil {
+			done <- clipadapter.ErrClipboardUnavailable
+			return
+		}
+		clipboard := v.Root.GetClipboard()
+		if clipboard == nil {
+			done <- clipadapter.ErrClipboardUnavailable
+			return
+		}
+		clipboard.SetText(text)
+		done <- nil
+	})
+	return <-done
+}
+
 func logOverlayError(ctx context.Context, operation string, err error) {
 	if err == nil {
 		return
@@ -221,38 +245,10 @@ func New(ctx context.Context, service in.AppService, quit func(), retainFn func(
 	v.buildUI()
 	v.clipboard = clipadapter.New(
 		func(text string) error {
-			done := make(chan error, 1)
-			idleAddOnce(func() {
-				if v.Root == nil {
-					done <- clipadapter.ErrClipboardUnavailable
-					return
-				}
-				clipboard := v.Root.GetClipboard()
-				if clipboard == nil {
-					done <- clipadapter.ErrClipboardUnavailable
-					return
-				}
-				clipboard.SetText(text)
-				done <- nil
-			})
-			return <-done
+			return v.writeGTKClipboard(text)
 		},
 		func() error {
-			done := make(chan error, 1)
-			idleAddOnce(func() {
-				if v.Root == nil {
-					done <- clipadapter.ErrClipboardUnavailable
-					return
-				}
-				clipboard := v.Root.GetClipboard()
-				if clipboard == nil {
-					done <- clipadapter.ErrClipboardUnavailable
-					return
-				}
-				clipboard.SetText("")
-				done <- nil
-			})
-			return <-done
+			return v.writeGTKClipboard("")
 		},
 	)
 	v.showUnlock()
@@ -523,9 +519,18 @@ func (v *View) startQuickAddForCategory() {
 
 	item := vault.Item{Type: categoryItemType(category)}
 	if item.Type == vault.ItemTypeLogin {
+		item.Login = &vault.Login{}
 		query := strings.TrimSpace(v.searchEntry.GetText())
 		if query != "" {
-			item.Login = &vault.Login{URIs: []vault.URI{{URI: query}}}
+			item.Login.URIs = []vault.URI{{URI: query}}
+		}
+		if password, err := v.generatePasswordFromCurrentOptions(); err == nil {
+			item.Login.Password = password
+		} else {
+			logOverlayError(v.ctx, "prefill_generated_password", err)
+			v.mu.Lock()
+			v.state.SetStatus(Status{Text: err.Error(), Error: err.Error()})
+			v.mu.Unlock()
 		}
 	}
 	v.showFormItem(item)
@@ -1988,10 +1993,34 @@ func (v *View) renderLoginFormFields(formContent *gtklib.Box, editable EditableI
 	pwText := "Password"
 	pwLabel := gtklib.NewLabel(&pwText)
 	formContent.Append(&pwLabel.Widget)
+	passwordRow := gtklib.NewBox(gtklib.OrientationHorizontalValue, 6)
 	pwEntry = gtklib.NewEntry()
 	pwEntry.SetText(editable.Password)
 	pwEntry.SetVisibility(false)
-	formContent.Append(&pwEntry.Widget)
+	pwEntry.SetHexpand(true)
+	passwordRow.Append(&pwEntry.Widget)
+	refreshBtn := gtklib.NewButtonWithLabel("↻")
+	refreshTooltip := "Regenerate password from Gen tab settings"
+	refreshBtn.SetTooltipText(&refreshTooltip)
+	refreshCb := func(_ gtklib.Button) {
+		password, err := v.generatePasswordFromCurrentOptions()
+		if err != nil {
+			v.mu.Lock()
+			v.state.SetStatus(Status{Text: err.Error(), Error: err.Error()})
+			v.mu.Unlock()
+			v.renderStatus()
+			return
+		}
+		pwEntry.SetText(password)
+		v.mu.Lock()
+		v.state.SetStatus(Status{Text: "Generated password refreshed"})
+		v.mu.Unlock()
+		v.renderStatus()
+	}
+	handler := refreshBtn.ConnectClicked(&refreshCb)
+	v.retainDynamic(&refreshBtn.Object, handler, refreshCb)
+	passwordRow.Append(&refreshBtn.Widget)
+	formContent.Append(&passwordRow.Widget)
 
 	totpText := "TOTP (optional)"
 	totpLabel := gtklib.NewLabel(&totpText)
