@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/out"
+	"github.com/bnema/gtkls-bitwarden-client/internal/ports/out"
 )
 
 var ErrClipboardUnavailable = errors.New("clipboard: no clipboard backend available")

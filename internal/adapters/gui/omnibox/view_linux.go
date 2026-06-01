@@ -14,13 +14,13 @@ import (
 	gtklib "github.com/bnema/puregotk/v4/gtk"
 	"github.com/bnema/puregotk/v4/pango"
 
-	clipadapter "github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/clipboard"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/auth"
-	safelog "github.com/bnema/gtk4-layershell-bitwarden/internal/core/logging"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/in"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/out"
+	clipadapter "github.com/bnema/gtkls-bitwarden-client/internal/adapters/clipboard"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/auth"
+	safelog "github.com/bnema/gtkls-bitwarden-client/internal/core/logging"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/session"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
+	"github.com/bnema/gtkls-bitwarden-client/internal/ports/in"
+	"github.com/bnema/gtkls-bitwarden-client/internal/ports/out"
 	"github.com/bnema/zerowrap"
 )
 
@@ -1043,7 +1043,7 @@ func (v *View) doUnlock(ctx context.Context) {
 	}
 
 	// Unauthenticated: no login form; guide user to CLI.
-	v.showError("Not logged in. Please run `gtk4-layershell-bitwarden login <email>` from the terminal to create PIN-protected access, then restart the overlay.")
+	v.showError("Not logged in. Please run `gtkls-bitwarden-client login <email>` from the terminal to create PIN-protected access, then restart the overlay.")
 }
 
 // doPINRenew runs in ModePINRenew (profile exists but no valid envelope).

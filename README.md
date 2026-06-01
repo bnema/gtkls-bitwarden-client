@@ -1,4 +1,4 @@
-# gtk4-layershell-bitwarden
+# gtkls-bitwarden-client
 
 A keyboard-driven GTK4 layer-shell Bitwarden client for Linux Wayland desktops.
 
@@ -14,19 +14,19 @@ The app runs as an overlay over your compositor instead of a regular window. It 
 | **Compositor** | Wayland compositor with `wlr-layer-shell` support, such as Sway or Hyprland |
 | **Secret Service** | Linux Secret Service keyring, such as GNOME Keyring or KWallet |
 
-### Install with Go :
+### Install with Go
 
 ```sh
-go install github.com/bnema/gtk4-layershell-bitwarden/cmd/gtk4-layershell-bitwarden@v0.1.0
+go install github.com/bnema/gtkls-bitwarden-client/cmd/gtkls-bitwarden-client@v0.2.0
 ```
 
-### Build from source:
+### Build from source
 
 ```sh
-git clone https://github.com/bnema/gtk4-layershell-bitwarden.git
-cd gtk4-layershell-bitwarden
+git clone https://github.com/bnema/gtkls-bitwarden-client.git
+cd gtkls-bitwarden-client
 make build
-./dist/gtk4-layershell-bitwarden --version
+./dist/gtkls-bitwarden-client --version
 ```
 
 Headless tests and non-GTK code can be built with the `nogtk` build tag:
@@ -37,41 +37,58 @@ go test -tags nogtk ./...
 
 ## First Run / Config
 
-Once installed, follow the interactive login flow 
+Once installed, follow the interactive login flow:
 
 ```sh
-gtk4-layershell-bitwarden login
+gtkls-bitwarden-client login
 ```
 
-Then launch it for the terminal, unlock with your previously defined pin and verify your vault sync with success
+Then launch it from the terminal, unlock with your previously defined PIN, and verify your vault sync succeeds:
 
 ```sh
-gtk4-layershell-bitwarden
+gtkls-bitwarden-client
 ```
 
 (Optional) Use it in your Wayland compositor like Niri for example
 
 ```kdl
-Mod+Ctrl+P hotkey-overlay-title="Password Manager: gtk4-layershell-bitwarden" { spawn "gtk4-layershell-bitwarden"; }
+Mod+Ctrl+P hotkey-overlay-title="Password Manager: gtkls-bitwarden-client" { spawn "gtkls-bitwarden-client"; }
 ```
 
 The default config path is:
 
 ```sh
-~/.config/gtk4-layershell-bitwarden/config.toml
+~/.config/gtkls-bitwarden-client/config.toml
 ```
+
+`$XDG_CONFIG_HOME` is respected. A missing config file is not an error; built-in defaults are used and the config can be written later through the CLI or GUI.
+
+Optional starter config:
+
+```sh
+mkdir -p ~/.config/gtkls-bitwarden-client
+cp configs/config.example.toml ~/.config/gtkls-bitwarden-client/config.toml
+```
+
+For non-interactive unlock flows, configure `bitwarden.email` first:
+
+```sh
+gtkls-bitwarden-client config set bitwarden.email you@example.com
+```
+
+## Login / Unlock CLI Flow
 
 Common commands:
 
 ```sh
-gtk4-layershell-bitwarden login you@example.com --region us
-gtk4-layershell-bitwarden login you@example.com --region eu
-gtk4-layershell-bitwarden login you@example.com --region self_hosted --server-url https://vault.example.com
-gtk4-layershell-bitwarden unlock
-gtk4-layershell-bitwarden status
-gtk4-layershell-bitwarden lock
-gtk4-layershell-bitwarden lock --hard
-gtk4-layershell-bitwarden logout
+gtkls-bitwarden-client login you@example.com --region us
+gtkls-bitwarden-client login you@example.com --region eu
+gtkls-bitwarden-client login you@example.com --region self_hosted --server-url https://vault.example.com
+gtkls-bitwarden-client unlock
+gtkls-bitwarden-client status
+gtkls-bitwarden-client lock
+gtkls-bitwarden-client lock --hard
+gtkls-bitwarden-client logout
 ```
 
 Auth flags:
@@ -89,20 +106,20 @@ The app does **not** use the `BW_SESSION` environment variable. Access tokens, r
 
 ## Environment Overrides
 
-All config keys can be overridden through environment variables with the `GLSBW_` prefix and dots replaced by underscores.
+All config keys can be overridden through environment variables with the `GTKLSBW_` prefix and dots replaced by underscores.
 
 | Environment variable | Config key |
 |---|---|
-| `GLSBW_BITWARDEN_EMAIL` | `bitwarden.email` |
-| `GLSBW_BITWARDEN_REGION` | `bitwarden.region` |
-| `GLSBW_BITWARDEN_SERVER_URL` | `bitwarden.server_url` |
-| `GLSBW_DEVICE_IDENTIFIER` | `device.identifier` |
-| `GLSBW_SYNC_REVISION_CHECK_INTERVAL` | `sync.revision_check_interval` |
-| `GLSBW_SECURITY_IDLE_RELOCK_AFTER` | `security.idle_relock_after` |
-| `GLSBW_SECURITY_RESIDENT_RELOCK_AFTER` | `security.resident_relock_after` |
-| `GLSBW_ACTIONS_CLIPBOARD_CLEAR_AFTER` | `actions.clipboard_clear_after` |
-| `GLSBW_APPEARANCE_UI_SCALE` | `appearance.ui_scale` |
-| `GLSBW_CACHE_TTL` | `cache.ttl` |
+| `GTKLSBW_BITWARDEN_EMAIL` | `bitwarden.email` |
+| `GTKLSBW_BITWARDEN_REGION` | `bitwarden.region` |
+| `GTKLSBW_BITWARDEN_SERVER_URL` | `bitwarden.server_url` |
+| `GTKLSBW_DEVICE_IDENTIFIER` | `device.identifier` |
+| `GTKLSBW_SYNC_REVISION_CHECK_INTERVAL` | `sync.revision_check_interval` |
+| `GTKLSBW_SECURITY_IDLE_RELOCK_AFTER` | `security.idle_relock_after` |
+| `GTKLSBW_SECURITY_RESIDENT_RELOCK_AFTER` | `security.resident_relock_after` |
+| `GTKLSBW_ACTIONS_CLIPBOARD_CLEAR_AFTER` | `actions.clipboard_clear_after` |
+| `GTKLSBW_APPEARANCE_UI_SCALE` | `appearance.ui_scale` |
+| `GTKLSBW_CACHE_TTL` | `cache.ttl` |
 
 Environment overrides take precedence over the config file.
 
@@ -111,26 +128,26 @@ Environment overrides take precedence over the config file.
 Logs are written to a rotating file by default:
 
 ```sh
-$XDG_STATE_HOME/gtk4-layershell-bitwarden/logs/gtk4-layershell-bitwarden.log
+$XDG_STATE_HOME/gtkls-bitwarden-client/logs/gtkls-bitwarden-client.log
 ```
 
 If `$XDG_STATE_HOME` is unset, Linux defaults to:
 
 ```sh
-~/.local/state/gtk4-layershell-bitwarden/logs/gtk4-layershell-bitwarden.log
+~/.local/state/gtkls-bitwarden-client/logs/gtkls-bitwarden-client.log
 ```
 
-Default logging is file-only, level `info`, and JSON formatted. Set `GLSBW_LOG_CONSOLE=true` to mirror logs to stderr.
+Default logging is file-only, level `info`, and JSON formatted. Set `GTKLSBW_LOG_CONSOLE=true` to mirror logs to stderr.
 
 | Environment variable | Purpose |
 |---|---|
-| `GLSBW_LOG_LEVEL` | `trace`, `debug`, `info`, `warn`, `warning`, `error`, `fatal`, `panic`, or `disabled` |
-| `GLSBW_LOG_FORMAT` | `json` or `console` |
-| `GLSBW_LOG_CONSOLE` | Mirror logs to stderr when `true` |
-| `GLSBW_LOG_PATH` | Override log file path |
-| `GLSBW_LOG_MAX_SIZE_MB` | Rotate after this many MiB |
-| `GLSBW_LOG_MAX_BACKUPS` | Number of rotated backups to keep |
-| `GLSBW_LOG_MAX_AGE_DAYS` | Maximum age of rotated logs in days |
+| `GTKLSBW_LOG_LEVEL` | `trace`, `debug`, `info`, `warn`, `warning`, `error`, `fatal`, `panic`, or `disabled` |
+| `GTKLSBW_LOG_FORMAT` | `json` or `console` |
+| `GTKLSBW_LOG_CONSOLE` | Mirror logs to stderr when `true` |
+| `GTKLSBW_LOG_PATH` | Override log file path |
+| `GTKLSBW_LOG_MAX_SIZE_MB` | Rotate after this many MiB |
+| `GTKLSBW_LOG_MAX_BACKUPS` | Number of rotated backups to keep |
+| `GTKLSBW_LOG_MAX_AGE_DAYS` | Maximum age of rotated logs in days |
 
 Invalid logging environment values fail startup with a clear error naming the invalid variable. The project follows a strict no-secret logging policy.
 
@@ -140,7 +157,7 @@ Bind a compositor hotkey to launch the overlay. Example for Sway:
 
 ```sh
 # ~/.config/sway/config
-bindsym $mod+Shift+b exec /path/to/gtk4-layershell-bitwarden
+bindsym $mod+Shift+b exec /path/to/gtkls-bitwarden-client
 ```
 
 On Wayland, the launcher re-execs itself with `libgtk4-layer-shell.so.0` in `LD_PRELOAD` before GTK initializes. This is required on compositors where gtk4-layer-shell's GDK hook must load before GTK.

@@ -11,10 +11,10 @@ import (
 
 	"github.com/bnema/zerowrap"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/fileutil"
-	safelog "github.com/bnema/gtk4-layershell-bitwarden/internal/core/logging"
-	coresync "github.com/bnema/gtk4-layershell-bitwarden/internal/core/sync"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/out"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/fileutil"
+	safelog "github.com/bnema/gtkls-bitwarden-client/internal/core/logging"
+	coresync "github.com/bnema/gtkls-bitwarden-client/internal/core/sync"
+	"github.com/bnema/gtkls-bitwarden-client/internal/ports/out"
 )
 
 // outboxEnvelope is the on-disk envelope for encrypted outbox mutations.

@@ -7,11 +7,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/auth"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/cache"
-	cerrors "github.com/bnema/gtk4-layershell-bitwarden/internal/core/errors"
-	coresync "github.com/bnema/gtk4-layershell-bitwarden/internal/core/sync"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/auth"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/cache"
+	cerrors "github.com/bnema/gtkls-bitwarden-client/internal/core/errors"
+	coresync "github.com/bnema/gtkls-bitwarden-client/internal/core/sync"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
 )
 
 type backgroundSyncMode int

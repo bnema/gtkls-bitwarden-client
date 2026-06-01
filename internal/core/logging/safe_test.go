@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	coreerrors "github.com/bnema/gtk4-layershell-bitwarden/internal/core/errors"
+	coreerrors "github.com/bnema/gtkls-bitwarden-client/internal/core/errors"
 )
 
 func TestShouldRedactKeySensitiveWords(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"errors"
 	"time"
 
-	session "github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
+	session "github.com/bnema/gtkls-bitwarden-client/internal/core/session"
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/chacha20poly1305"
 )

@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to `gtk4-layershell-bitwarden` are documented here.
+All notable changes to `gtkls-bitwarden-client` are documented here.
 
 ## v0.2.0 - 2026-05-19
 

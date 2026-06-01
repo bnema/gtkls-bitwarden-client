@@ -13,13 +13,13 @@ import (
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/chacha20poly1305"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/cache/crypto"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/cache/file"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/auth"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/cache"
-	coreerrors "github.com/bnema/gtk4-layershell-bitwarden/internal/core/errors"
-	coresync "github.com/bnema/gtk4-layershell-bitwarden/internal/core/sync"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/cache/crypto"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/cache/file"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/auth"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/cache"
+	coreerrors "github.com/bnema/gtkls-bitwarden-client/internal/core/errors"
+	coresync "github.com/bnema/gtkls-bitwarden-client/internal/core/sync"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
 )
 
 // ---------------------------------------------------------------------------

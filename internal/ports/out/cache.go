@@ -3,7 +3,7 @@ package out
 import (
 	"context"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/cache"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/cache"
 )
 
 // CacheStore persists and retrieves encrypted vault snapshots.

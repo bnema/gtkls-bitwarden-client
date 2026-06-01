@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	session "github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
+	session "github.com/bnema/gtkls-bitwarden-client/internal/core/session"
 )
 
 func testConfig() ServiceConfig {

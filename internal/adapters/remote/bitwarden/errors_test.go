@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	sdk "github.com/bnema/bitwarden-go-sdk/bitwarden"
-	coreerrors "github.com/bnema/gtk4-layershell-bitwarden/internal/core/errors"
+	coreerrors "github.com/bnema/gtkls-bitwarden-client/internal/core/errors"
 )
 
 func TestClassifySDKErrorDecryptionFailed(t *testing.T) {

@@ -1,4 +1,4 @@
-APP := gtk4-layershell-bitwarden
+APP := gtkls-bitwarden-client
 CMD := ./cmd/$(APP)
 DIST_DIR := dist
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)

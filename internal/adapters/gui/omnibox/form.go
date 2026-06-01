@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
 )
 
 // EditableItem holds all the fields a user can edit for a vault item.

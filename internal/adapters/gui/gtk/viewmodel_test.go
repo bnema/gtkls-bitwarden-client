@@ -3,8 +3,8 @@ package gtk
 import (
 	"testing"
 
-	corevault "github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/in"
+	corevault "github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
+	"github.com/bnema/gtkls-bitwarden-client/internal/ports/in"
 	"github.com/stretchr/testify/require"
 )
 

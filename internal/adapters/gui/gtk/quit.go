@@ -3,7 +3,7 @@ package gtk
 import (
 	"context"
 
-	safelog "github.com/bnema/gtk4-layershell-bitwarden/internal/core/logging"
+	safelog "github.com/bnema/gtkls-bitwarden-client/internal/core/logging"
 	"github.com/bnema/zerowrap"
 )
 

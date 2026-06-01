@@ -7,7 +7,7 @@ import (
 
 	gtklib "github.com/bnema/puregotk/v4/gtk"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/passwordgen"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/passwordgen"
 )
 
 func (v *View) buildGeneratorUI() {

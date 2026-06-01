@@ -3,10 +3,10 @@ package gtk
 import (
 	"strings"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/gui/display"
-	coreerrors "github.com/bnema/gtk4-layershell-bitwarden/internal/core/errors"
-	corevault "github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/in"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/gui/display"
+	coreerrors "github.com/bnema/gtkls-bitwarden-client/internal/core/errors"
+	corevault "github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
+	"github.com/bnema/gtkls-bitwarden-client/internal/ports/in"
 )
 
 // RowViewModel represents a vault item row for display in a list.

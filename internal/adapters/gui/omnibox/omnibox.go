@@ -3,7 +3,7 @@
 // compile under any build tag.
 package omnibox
 
-import "github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
+import "github.com/bnema/gtkls-bitwarden-client/internal/core/session"
 
 // Mode represents the current view mode of the omnibox.
 type Mode int

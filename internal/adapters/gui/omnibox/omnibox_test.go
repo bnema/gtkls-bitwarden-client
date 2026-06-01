@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/session"
 )
 
 func TestNewState_Defaults(t *testing.T) {

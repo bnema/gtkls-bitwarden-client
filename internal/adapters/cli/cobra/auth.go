@@ -12,11 +12,11 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	viperadapter "github.com/bnema/gtk4-layershell-bitwarden/internal/app/viper"
-	coreauth "github.com/bnema/gtk4-layershell-bitwarden/internal/core/auth"
-	coreconfig "github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/in"
+	viperadapter "github.com/bnema/gtkls-bitwarden-client/internal/app/viper"
+	coreauth "github.com/bnema/gtkls-bitwarden-client/internal/core/auth"
+	coreconfig "github.com/bnema/gtkls-bitwarden-client/internal/core/config"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/session"
+	"github.com/bnema/gtkls-bitwarden-client/internal/ports/in"
 )
 
 type authOptions struct {
@@ -185,7 +185,7 @@ func runUnlock(cmd *cobra.Command, opts Options, cachePath, outboxPath string, a
 
 	email := cfg.Bitwarden.Email
 	if strings.TrimSpace(email) == "" {
-		return fmt.Errorf("no configured email; run `gtk4-layershell-bitwarden login <email>` first or set bitwarden.email")
+		return fmt.Errorf("no configured email; run `gtkls-bitwarden-client login <email>` first or set bitwarden.email")
 	}
 
 	// Compose service and fail-fast on keyring-unavailable BEFORE consuming
@@ -241,11 +241,11 @@ func runUnlock(cmd *cobra.Command, opts Options, cachePath, outboxPath string, a
 func detailLockedMessage(detail session.AuthStatusDetail) string {
 	switch detail.Reason {
 	case session.AuthReasonNoToken:
-		return "not logged in; run `gtk4-layershell-bitwarden login <email>` first"
+		return "not logged in; run `gtkls-bitwarden-client login <email>` first"
 	case session.AuthReasonNoPINProfile:
-		return "no PIN profile configured; run `gtk4-layershell-bitwarden login <email>` to set up PIN unlock"
+		return "no PIN profile configured; run `gtkls-bitwarden-client login <email>` to set up PIN unlock"
 	case session.AuthReasonNoEnvelope:
-		return "no unlock envelope; run `gtk4-layershell-bitwarden login <email>` to create one, or use the GUI for envelope renewal"
+		return "no unlock envelope; run `gtkls-bitwarden-client login <email>` to create one, or use the GUI for envelope renewal"
 	case session.AuthReasonEnvelopeExpired:
 		return "unlock envelope expired; renew with master password (run GUI or login)"
 	case session.AuthReasonBootChanged:

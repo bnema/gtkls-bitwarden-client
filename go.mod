@@ -1,4 +1,4 @@
-module github.com/bnema/gtk4-layershell-bitwarden
+module github.com/bnema/gtkls-bitwarden-client
 
 go 1.26.1
 

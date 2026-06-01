@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	adapterlogging "github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/logging"
+	adapterlogging "github.com/bnema/gtkls-bitwarden-client/internal/adapters/logging"
 )
 
 func TestRunInitializesFileOnlyLogging(t *testing.T) {
@@ -43,7 +43,7 @@ func TestRunInitializesFileOnlyLogging(t *testing.T) {
 
 func TestRunReportsLoggerInitializationError(t *testing.T) {
 	setCleanRuntimeEnv(t, t.TempDir())
-	t.Setenv("GLSBW_LOG_LEVEL", "verbose")
+	t.Setenv("GTKLSBW_LOG_LEVEL", "verbose")
 
 	var stdout, stderr bytes.Buffer
 	exitCode := run([]string{"status"}, &stdout, &stderr)
@@ -51,7 +51,7 @@ func TestRunReportsLoggerInitializationError(t *testing.T) {
 	require.Equal(t, 1, exitCode)
 	require.Empty(t, stdout.String())
 	require.Contains(t, stderr.String(), "error: initialize logging:")
-	require.Contains(t, stderr.String(), "GLSBW_LOG_LEVEL")
+	require.Contains(t, stderr.String(), "GTKLSBW_LOG_LEVEL")
 }
 
 func TestRunLogsCommandFailureWithSafeErrorKind(t *testing.T) {
@@ -79,13 +79,13 @@ func setCleanRuntimeEnv(t *testing.T, stateHome string) {
 	t.Setenv("XDG_STATE_HOME", stateHome)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(runtimeDir, "config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(runtimeDir, "cache"))
-	t.Setenv("GLSBW_LOG_LEVEL", "")
-	t.Setenv("GLSBW_LOG_FORMAT", "")
-	t.Setenv("GLSBW_LOG_CONSOLE", "")
-	t.Setenv("GLSBW_LOG_PATH", "")
-	t.Setenv("GLSBW_LOG_MAX_SIZE_MB", "")
-	t.Setenv("GLSBW_LOG_MAX_BACKUPS", "")
-	t.Setenv("GLSBW_LOG_MAX_AGE_DAYS", "")
+	t.Setenv("GTKLSBW_LOG_LEVEL", "")
+	t.Setenv("GTKLSBW_LOG_FORMAT", "")
+	t.Setenv("GTKLSBW_LOG_CONSOLE", "")
+	t.Setenv("GTKLSBW_LOG_PATH", "")
+	t.Setenv("GTKLSBW_LOG_MAX_SIZE_MB", "")
+	t.Setenv("GTKLSBW_LOG_MAX_BACKUPS", "")
+	t.Setenv("GTKLSBW_LOG_MAX_AGE_DAYS", "")
 }
 
 func readJSONLogEntries(t *testing.T, path string) []map[string]any {

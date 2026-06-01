@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 )
 
-const defaultAppName = "gtk4-layershell-bitwarden"
+const defaultAppName = "gtkls-bitwarden-client"
 
 // Paths holds the application name used to derive all paths.
 type Paths struct {
@@ -15,7 +15,7 @@ type Paths struct {
 }
 
 // New returns a Paths for the given app name. An empty name defaults to
-// "gtk4-layershell-bitwarden".
+// "gtkls-bitwarden-client".
 func New(appName string) Paths {
 	if appName == "" {
 		appName = defaultAppName

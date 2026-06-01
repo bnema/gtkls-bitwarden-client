@@ -13,9 +13,9 @@ import (
 	"github.com/pelletier/go-toml/v2"
 	"github.com/spf13/viper"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/fileutil"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/paths/xdg"
-	coreconfig "github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/fileutil"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/paths/xdg"
+	coreconfig "github.com/bnema/gtkls-bitwarden-client/internal/core/config"
 )
 
 // Manager implements out.ConfigStore using Viper for loading and go-toml/v2 for
@@ -178,8 +178,8 @@ func (m *Manager) Load(ctx context.Context) (*coreconfig.Config, error) {
 	v.SetConfigFile(m.path)
 	v.SetConfigType("toml")
 
-	// Environment overrides: prefix GLSBW, dots become underscores
-	v.SetEnvPrefix("GLSBW")
+	// Environment overrides: prefix GTKLSBW, dots become underscores
+	v.SetEnvPrefix("GTKLSBW")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 

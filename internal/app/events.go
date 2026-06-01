@@ -1,6 +1,6 @@
 package app
 
-import "github.com/bnema/gtk4-layershell-bitwarden/internal/ports/in"
+import "github.com/bnema/gtkls-bitwarden-client/internal/ports/in"
 
 // Event is a domain event emitted by the application layer.
 type Event = in.Event

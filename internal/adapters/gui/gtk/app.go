@@ -12,11 +12,11 @@ import (
 	"github.com/bnema/puregotk/v4/gio"
 	gtklib "github.com/bnema/puregotk/v4/gtk"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/gui/layershell"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/gui/omnibox"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/gui/theme"
-	coretheme "github.com/bnema/gtk4-layershell-bitwarden/internal/core/theme"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/in"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/gui/layershell"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/gui/omnibox"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/gui/theme"
+	coretheme "github.com/bnema/gtkls-bitwarden-client/internal/core/theme"
+	"github.com/bnema/gtkls-bitwarden-client/internal/ports/in"
 )
 
 // Options configures the GTK overlay application.
@@ -71,7 +71,7 @@ func (o *Overlay) Run(ctx context.Context) error {
 
 	appID := o.opts.AppID
 	if appID == "" {
-		appID = "dev.bnema.gtk4-layershell-bitwarden"
+		appID = "dev.bnema.gtkls-bitwarden-client"
 	}
 
 	app := gtklib.NewApplication(&appID, gio.GApplicationNonUniqueValue)
@@ -88,7 +88,7 @@ func (o *Overlay) Run(ctx context.Context) error {
 		// Configure layer-shell overlay.
 		namespace := o.opts.Namespace
 		if namespace == "" {
-			namespace = "gtk4-layershell-bitwarden"
+			namespace = "gtkls-bitwarden-client"
 		}
 		if !layershell.InitOverlay(&window.Window, layershell.OverlayConfig{
 			Namespace:         namespace,

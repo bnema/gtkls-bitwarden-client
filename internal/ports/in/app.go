@@ -7,11 +7,11 @@ import (
 	"context"
 	"io"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/auth"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/sync"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/auth"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/config"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/session"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/sync"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
 )
 
 // EventKind categorises events emitted by the application layer.

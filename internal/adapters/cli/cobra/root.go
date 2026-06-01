@@ -11,22 +11,22 @@ import (
 	"github.com/bnema/zerowrap"
 	"github.com/spf13/cobra"
 
-	cryptobox "github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/cache/crypto"
-	cachefile "github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/cache/file"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/gui/gtk"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/gui/layershell"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/paths/xdg"
-	remoteadapter "github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/remote/bitwarden"
-	keyring "github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/secrets/keyring"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/session/bootid"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/session/pinenvelope"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/app"
-	viperadapter "github.com/bnema/gtk4-layershell-bitwarden/internal/app/viper"
-	coreconfig "github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
-	safelog "github.com/bnema/gtk4-layershell-bitwarden/internal/core/logging"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/in"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/out"
+	cryptobox "github.com/bnema/gtkls-bitwarden-client/internal/adapters/cache/crypto"
+	cachefile "github.com/bnema/gtkls-bitwarden-client/internal/adapters/cache/file"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/gui/gtk"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/gui/layershell"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/paths/xdg"
+	remoteadapter "github.com/bnema/gtkls-bitwarden-client/internal/adapters/remote/bitwarden"
+	keyring "github.com/bnema/gtkls-bitwarden-client/internal/adapters/secrets/keyring"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/session/bootid"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/session/pinenvelope"
+	"github.com/bnema/gtkls-bitwarden-client/internal/app"
+	viperadapter "github.com/bnema/gtkls-bitwarden-client/internal/app/viper"
+	coreconfig "github.com/bnema/gtkls-bitwarden-client/internal/core/config"
+	safelog "github.com/bnema/gtkls-bitwarden-client/internal/core/logging"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/session"
+	"github.com/bnema/gtkls-bitwarden-client/internal/ports/in"
+	"github.com/bnema/gtkls-bitwarden-client/internal/ports/out"
 )
 
 // Options holds configuration for the CLI.
@@ -48,14 +48,14 @@ type Options struct {
 // NewRootCommand creates the root CLI command with all subcommands.
 func NewRootCommand(opts Options) *cobra.Command {
 	root := &cobra.Command{
-		Use:   "gtk4-layershell-bitwarden",
+		Use:   "gtkls-bitwarden-client",
 		Short: "Bitwarden desktop client for GTK4 layershell",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			log := zerowrap.FromCtx(cmd.Context()).WithField(zerowrap.FieldComponent, "cli.root")
 			log.Info().Str(zerowrap.FieldOperation, "root").Msg("root command started")
 
 			layershell.EnsurePreloaded()
-			cmd.Println(fmt.Sprintf("gtk4-layershell-bitwarden %s", opts.Version))
+			cmd.Println(fmt.Sprintf("gtkls-bitwarden-client %s", opts.Version))
 
 			// Load config; tolerate missing email for first-run scenarios.
 			mgr := viperadapter.NewManager(opts.ConfigPath)
@@ -112,7 +112,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 			log.Info().Str(zerowrap.FieldOperation, "run_overlay").Msg("overlay started")
 			if err := runner(cmd.Context(), svc); err != nil {
 				if strings.Contains(err.Error(), "layer-shell is not available") {
-					return fmt.Errorf("%w\n\nGTK layer-shell is not available in this session. Use `gtk4-layershell-bitwarden login`, `unlock`, or `status` from a terminal, or run the overlay inside a layer-shell-capable Wayland compositor", err)
+					return fmt.Errorf("%w\n\nGTK layer-shell is not available in this session. Use `gtkls-bitwarden-client login`, `unlock`, or `status` from a terminal, or run the overlay inside a layer-shell-capable Wayland compositor", err)
 				}
 				return err
 			}

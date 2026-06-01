@@ -10,9 +10,9 @@ import (
 
 	"github.com/bnema/zerowrap"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/fileutil"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/cache"
-	safelog "github.com/bnema/gtk4-layershell-bitwarden/internal/core/logging"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/fileutil"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/cache"
+	safelog "github.com/bnema/gtkls-bitwarden-client/internal/core/logging"
 )
 
 // Store persists encrypted cache snapshots to a JSON file on disk.

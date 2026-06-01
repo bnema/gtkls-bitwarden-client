@@ -9,7 +9,7 @@ import (
 
 	gtklib "github.com/bnema/puregotk/v4/gtk"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
 )
 
 func TestTypeIconPaintable_MaterializesSymbolicIcons(t *testing.T) {
@@ -41,7 +41,7 @@ func TestTypeIconPaintable_MaterializesSymbolicIcons(t *testing.T) {
 		"card-symbolic.svg",
 		"identity-symbolic.svg",
 	} {
-		path := filepath.Join(cacheHome, "gtk4-layershell-bitwarden", "type-row-icons-v1", filename)
+		path := filepath.Join(cacheHome, "gtkls-bitwarden-client", "type-row-icons-v1", filename)
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected materialized icon %q: %v", path, err)
 		}

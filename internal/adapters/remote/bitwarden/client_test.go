@@ -10,8 +10,8 @@ import (
 	"time"
 
 	sdk "github.com/bnema/bitwarden-go-sdk/bitwarden"
-	coreconfig "github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
-	coresession "github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
+	coreconfig "github.com/bnema/gtkls-bitwarden-client/internal/core/config"
+	coresession "github.com/bnema/gtkls-bitwarden-client/internal/core/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

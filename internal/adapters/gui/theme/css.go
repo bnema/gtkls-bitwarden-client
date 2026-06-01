@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	coretheme "github.com/bnema/gtk4-layershell-bitwarden/internal/core/theme"
+	coretheme "github.com/bnema/gtkls-bitwarden-client/internal/core/theme"
 )
 
 // BuildCSS generates a CSS string for the given palette and scale factor.

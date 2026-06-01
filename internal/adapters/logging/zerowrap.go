@@ -12,7 +12,7 @@ import (
 	"github.com/bnema/zerowrap"
 )
 
-const AppName = "gtk4-layershell-bitwarden"
+const AppName = "gtkls-bitwarden-client"
 
 // LogFileFormat is the format used for the file-backed log output.
 type LogFileFormat string
@@ -40,16 +40,16 @@ const (
 	defaultMaxSizeMB  = 100
 	defaultMaxBackups = 3
 	defaultMaxAgeDays = 28
-	envLogLevel       = "GLSBW_LOG_LEVEL"
-	envLogFormat      = "GLSBW_LOG_FORMAT"
-	envLogConsole     = "GLSBW_LOG_CONSOLE"
-	envLogPath        = "GLSBW_LOG_PATH"
-	envLogMaxSizeMB   = "GLSBW_LOG_MAX_SIZE_MB"
-	envLogMaxBackups  = "GLSBW_LOG_MAX_BACKUPS"
-	envLogMaxAgeDays  = "GLSBW_LOG_MAX_AGE_DAYS"
+	envLogLevel       = "GTKLSBW_LOG_LEVEL"
+	envLogFormat      = "GTKLSBW_LOG_FORMAT"
+	envLogConsole     = "GTKLSBW_LOG_CONSOLE"
+	envLogPath        = "GTKLSBW_LOG_PATH"
+	envLogMaxSizeMB   = "GTKLSBW_LOG_MAX_SIZE_MB"
+	envLogMaxBackups  = "GTKLSBW_LOG_MAX_BACKUPS"
+	envLogMaxAgeDays  = "GTKLSBW_LOG_MAX_AGE_DAYS"
 )
 
-// NewContextFromEnv creates the application zerowrap file logger from GLSBW_LOG_*
+// NewContextFromEnv creates the application zerowrap file logger from GTKLSBW_LOG_*
 // environment variables and attaches it to ctx with zerowrap.WithCtx.
 //
 // Defaults are file-only JSON logging at info level using zerowrap's

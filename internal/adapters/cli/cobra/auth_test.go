@@ -12,13 +12,13 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	coreauth "github.com/bnema/gtk4-layershell-bitwarden/internal/core/auth"
-	coreconfig "github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
-	cerrors "github.com/bnema/gtk4-layershell-bitwarden/internal/core/errors"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
-	coresync "github.com/bnema/gtk4-layershell-bitwarden/internal/core/sync"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/in"
+	coreauth "github.com/bnema/gtkls-bitwarden-client/internal/core/auth"
+	coreconfig "github.com/bnema/gtkls-bitwarden-client/internal/core/config"
+	cerrors "github.com/bnema/gtkls-bitwarden-client/internal/core/errors"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/session"
+	coresync "github.com/bnema/gtkls-bitwarden-client/internal/core/sync"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
+	"github.com/bnema/gtkls-bitwarden-client/internal/ports/in"
 )
 
 // TODO: Replace fakeAuthService with a generated mock if this app repo adopts
@@ -479,7 +479,7 @@ func TestLayerShellUnavailableSuggestsCLIAuth(t *testing.T) {
 
 	_, err := executeCmd(t, opts, []string{})
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "gtk4-layershell-bitwarden login")
+	require.Contains(t, err.Error(), "gtkls-bitwarden-client login")
 }
 
 // TestUnlockDoesNotConsumePINStdinWhenKeyringUnavailable verifies that

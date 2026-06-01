@@ -12,11 +12,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	adapterlogging "github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/logging"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/app"
-	coreconfig "github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/in"
+	adapterlogging "github.com/bnema/gtkls-bitwarden-client/internal/adapters/logging"
+	"github.com/bnema/gtkls-bitwarden-client/internal/app"
+	coreconfig "github.com/bnema/gtkls-bitwarden-client/internal/core/config"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/session"
+	"github.com/bnema/gtkls-bitwarden-client/internal/ports/in"
 )
 
 // executeCmd runs the root command with the given args and returns stdout/stderr.
@@ -54,7 +54,7 @@ func TestRootCommandPrintsVersion(t *testing.T) {
 
 	out, err := executeCmd(t, opts, []string{})
 	require.NoError(t, err)
-	assert.Contains(t, out, "gtk4-layershell-bitwarden v0.1.0-test")
+	assert.Contains(t, out, "gtkls-bitwarden-client v0.1.0-test")
 	assert.True(t, called, "RunOverlay should have been called")
 }
 
@@ -417,7 +417,7 @@ func TestRootCommandHandlesMissingConfigFile(t *testing.T) {
 
 	out, err := executeCmd(t, opts, []string{})
 	require.NoError(t, err)
-	assert.Contains(t, out, "gtk4-layershell-bitwarden v0.1.0")
+	assert.Contains(t, out, "gtkls-bitwarden-client v0.1.0")
 	assert.True(t, called, "RunOverlay should have been called with default config")
 }
 
