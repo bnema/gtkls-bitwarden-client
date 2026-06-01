@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	coreerrors "github.com/bnema/gtk4-layershell-bitwarden/internal/core/errors"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/in"
+	coreerrors "github.com/bnema/gtkls-bitwarden-client/internal/core/errors"
+	"github.com/bnema/gtkls-bitwarden-client/internal/ports/in"
 )
 
 const syncUpdatedRefreshDelay = 1500 * time.Millisecond

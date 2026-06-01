@@ -8,9 +8,9 @@ import (
 
 	"github.com/bnema/zerowrap"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/cli/cobra"
-	adapterlogging "github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/logging"
-	corelogging "github.com/bnema/gtk4-layershell-bitwarden/internal/core/logging"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/cli/cobra"
+	adapterlogging "github.com/bnema/gtkls-bitwarden-client/internal/adapters/logging"
+	corelogging "github.com/bnema/gtkls-bitwarden-client/internal/core/logging"
 )
 
 var version = "dev"

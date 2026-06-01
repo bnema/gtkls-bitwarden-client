@@ -7,8 +7,8 @@ import (
 	"strconv"
 
 	sdk "github.com/bnema/bitwarden-go-sdk/bitwarden"
-	coreconfig "github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
-	corevault "github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
+	coreconfig "github.com/bnema/gtkls-bitwarden-client/internal/core/config"
+	corevault "github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
 )
 
 // revealSecret safely reveals a *sdk.Secret, returning the plaintext string.

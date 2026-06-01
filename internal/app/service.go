@@ -16,14 +16,14 @@ import (
 	"github.com/bnema/zerowrap"
 	"golang.org/x/crypto/argon2"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/auth"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/cache"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
-	cerrors "github.com/bnema/gtk4-layershell-bitwarden/internal/core/errors"
-	safelog "github.com/bnema/gtk4-layershell-bitwarden/internal/core/logging"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
-	coresync "github.com/bnema/gtk4-layershell-bitwarden/internal/core/sync"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/auth"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/cache"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/config"
+	cerrors "github.com/bnema/gtkls-bitwarden-client/internal/core/errors"
+	safelog "github.com/bnema/gtkls-bitwarden-client/internal/core/logging"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/session"
+	coresync "github.com/bnema/gtkls-bitwarden-client/internal/core/sync"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
 )
 
 const (

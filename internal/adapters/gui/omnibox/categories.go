@@ -1,6 +1,6 @@
 package omnibox
 
-import "github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
+import "github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
 
 type itemCategory int
 

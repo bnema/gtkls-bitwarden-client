@@ -1,8 +1,8 @@
-# gtk4-layershell-bitwarden — example configuration
+# gtkls-bitwarden-client — example configuration
 #
 # Copy this file to your config directory:
-#   mkdir -p ~/.config/gtk4-layershell-bitwarden
-#   cp configs/config.example.toml ~/.config/gtk4-layershell-bitwarden/config.toml
+#   mkdir -p ~/.config/gtkls-bitwarden-client
+#   cp configs/config.example.toml ~/.config/gtkls-bitwarden-client/config.toml
 #
 # All values shown here are the built-in defaults. Uncomment and change
 # only what you need.

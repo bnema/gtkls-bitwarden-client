@@ -3,9 +3,9 @@ package omnibox
 import (
 	"strings"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/gui/display"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/gui/display"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/config"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
 )
 
 // RowsFromItems converts vault Items to safe Row slices.

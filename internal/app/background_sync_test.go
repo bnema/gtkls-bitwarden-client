@@ -8,11 +8,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/auth"
-	coreconfig "github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
-	coresync "github.com/bnema/gtk4-layershell-bitwarden/internal/core/sync"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/auth"
+	coreconfig "github.com/bnema/gtkls-bitwarden-client/internal/core/config"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/session"
+	coresync "github.com/bnema/gtkls-bitwarden-client/internal/core/sync"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
 )
 
 func TestSetBackgroundSyncSuspendedUnlocked(t *testing.T) {

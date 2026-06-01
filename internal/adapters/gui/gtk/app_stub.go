@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/in"
+	"github.com/bnema/gtkls-bitwarden-client/internal/ports/in"
 )
 
 // Options configures the GTK overlay application.

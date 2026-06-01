@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/chacha20poly1305"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/cache/crypto"
-	coresync "github.com/bnema/gtk4-layershell-bitwarden/internal/core/sync"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/cache/crypto"
+	coresync "github.com/bnema/gtkls-bitwarden-client/internal/core/sync"
 )
 
 func TestOutboxStore_SaveThenLoad_RoundTrip(t *testing.T) {

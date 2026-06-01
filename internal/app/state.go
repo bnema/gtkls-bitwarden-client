@@ -4,11 +4,11 @@ import (
 	"context"
 	"sync"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/auth"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
-	coresync "github.com/bnema/gtk4-layershell-bitwarden/internal/core/sync"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/out"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/auth"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/config"
+	coresync "github.com/bnema/gtkls-bitwarden-client/internal/core/sync"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
+	"github.com/bnema/gtkls-bitwarden-client/internal/ports/out"
 )
 
 // Deps holds the external dependencies the service needs.

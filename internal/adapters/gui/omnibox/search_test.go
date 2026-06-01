@@ -3,8 +3,8 @@ package omnibox
 import (
 	"testing"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/config"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
 	"github.com/stretchr/testify/require"
 )
 

@@ -3,7 +3,7 @@ package omnibox
 import (
 	"math"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
 )
 
 const (

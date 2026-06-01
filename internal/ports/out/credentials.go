@@ -3,7 +3,7 @@ package out
 import (
 	"context"
 
-	session "github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
+	session "github.com/bnema/gtkls-bitwarden-client/internal/core/session"
 )
 
 type CredentialStore interface {

@@ -11,13 +11,13 @@ import (
 	"time"
 
 	sdk "github.com/bnema/bitwarden-go-sdk/bitwarden"
-	coreauth "github.com/bnema/gtk4-layershell-bitwarden/internal/core/auth"
-	coreconfig "github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
-	coreerrors "github.com/bnema/gtk4-layershell-bitwarden/internal/core/errors"
-	safelog "github.com/bnema/gtk4-layershell-bitwarden/internal/core/logging"
-	coresession "github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
-	corevault "github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/ports/out"
+	coreauth "github.com/bnema/gtkls-bitwarden-client/internal/core/auth"
+	coreconfig "github.com/bnema/gtkls-bitwarden-client/internal/core/config"
+	coreerrors "github.com/bnema/gtkls-bitwarden-client/internal/core/errors"
+	safelog "github.com/bnema/gtkls-bitwarden-client/internal/core/logging"
+	coresession "github.com/bnema/gtkls-bitwarden-client/internal/core/session"
+	corevault "github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
+	"github.com/bnema/gtkls-bitwarden-client/internal/ports/out"
 	"github.com/bnema/zerowrap"
 )
 
@@ -251,7 +251,7 @@ func (c *Client) CompleteTwoFactor(ctx context.Context, _, _ string, _ bool) (re
 	return ErrTwoFactorUnsupported
 }
 
-const defaultDeviceIdentifier = "gtk4-layershell-bitwarden"
+const defaultDeviceIdentifier = "gtkls-bitwarden-client"
 
 func effectiveDeviceIdentifier(cfg *coreconfig.Config) (string, error) {
 	if cfg == nil {
@@ -270,7 +270,7 @@ func (c *Client) loginOptions(email, password string, rememberedTwoFactorToken [
 		Password:                 password,
 		DeviceType:               "LinuxDesktop",
 		DeviceIdentifier:         c.deviceIdentifier,
-		DeviceName:               "gtk4-layershell-bitwarden",
+		DeviceName:               "gtkls-bitwarden-client",
 		RememberedTwoFactorToken: rememberedTwoFactorToken,
 	}
 }

@@ -12,17 +12,17 @@ import (
 	"github.com/bnema/zerowrap"
 	zaladokeyring "github.com/zalando/go-keyring"
 
-	coreerrors "github.com/bnema/gtk4-layershell-bitwarden/internal/core/errors"
-	safelog "github.com/bnema/gtk4-layershell-bitwarden/internal/core/logging"
-	session "github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
+	coreerrors "github.com/bnema/gtkls-bitwarden-client/internal/core/errors"
+	safelog "github.com/bnema/gtkls-bitwarden-client/internal/core/logging"
+	session "github.com/bnema/gtkls-bitwarden-client/internal/core/session"
 )
 
 // Service names and probe user for the OS keyring.
 const (
-	serviceToken      = "gtk4-layershell-bitwarden/token"
-	serviceUnlock     = "gtk4-layershell-bitwarden/unlock"
-	servicePINProfile = "gtk4-layershell-bitwarden/pin-profile"
-	serviceProbe      = "gtk4-layershell-bitwarden/probe"
+	serviceToken      = "gtkls-bitwarden-client/token"
+	serviceUnlock     = "gtkls-bitwarden-client/unlock"
+	servicePINProfile = "gtkls-bitwarden-client/pin-profile"
+	serviceProbe      = "gtkls-bitwarden-client/probe"
 	probeUser         = "availability"
 	probeValue        = "ok"
 )

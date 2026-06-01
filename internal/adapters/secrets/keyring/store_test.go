@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	coreerrors "github.com/bnema/gtk4-layershell-bitwarden/internal/core/errors"
-	session "github.com/bnema/gtk4-layershell-bitwarden/internal/core/session"
+	coreerrors "github.com/bnema/gtkls-bitwarden-client/internal/core/errors"
+	session "github.com/bnema/gtkls-bitwarden-client/internal/core/session"
 )
 
 // ---------------------------------------------------------------------------

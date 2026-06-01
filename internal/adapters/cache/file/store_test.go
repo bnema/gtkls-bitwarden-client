@@ -11,7 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/cache"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/cache"
 )
 
 func TestStore_Save_CreatesFileWithMode0600(t *testing.T) {

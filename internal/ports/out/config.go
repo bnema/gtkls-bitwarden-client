@@ -3,7 +3,7 @@ package out
 import (
 	"context"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/config"
 )
 
 // ConfigStore persists and watches application configuration.

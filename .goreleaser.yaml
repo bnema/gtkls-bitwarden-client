@@ -1,11 +1,11 @@
 version: 2
 
-project_name: gtk4-layershell-bitwarden
+project_name: gtkls-bitwarden-client
 
 builds:
-  - id: gtk4-layershell-bitwarden
-    main: ./cmd/gtk4-layershell-bitwarden
-    binary: gtk4-layershell-bitwarden
+  - id: gtkls-bitwarden-client
+    main: ./cmd/gtkls-bitwarden-client
+    binary: gtkls-bitwarden-client
     env:
       - CGO_ENABLED=0
     goos:
@@ -21,7 +21,7 @@ builds:
 archives:
   - id: linux
     ids:
-      - gtk4-layershell-bitwarden
+      - gtkls-bitwarden-client
     formats:
       - tar.gz
     name_template: >-

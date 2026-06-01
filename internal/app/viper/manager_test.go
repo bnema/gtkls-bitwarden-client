@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	coreconfig "github.com/bnema/gtk4-layershell-bitwarden/internal/core/config"
+	coreconfig "github.com/bnema/gtkls-bitwarden-client/internal/core/config"
 )
 
 // tempConfig creates a Manager with a temporary config path and returns the
@@ -112,8 +112,8 @@ func TestEnvOverride(t *testing.T) {
 	mgr, _, cleanup := tempConfig(t)
 	defer cleanup()
 
-	// Set environment variable with GLSBW prefix and dots as underscores
-	t.Setenv("GLSBW_BITWARDEN_EMAIL", "env@example.com")
+	// Set environment variable with GTKLSBW prefix and dots as underscores
+	t.Setenv("GTKLSBW_BITWARDEN_EMAIL", "env@example.com")
 
 	cfg, err := mgr.Load(context.Background())
 	require.NoError(t, err)
@@ -134,7 +134,7 @@ func TestEnvOverrideTakesPrecedenceOverFile(t *testing.T) {
 	require.NoError(t, err)
 
 	// Override via env
-	t.Setenv("GLSBW_BITWARDEN_EMAIL", "env@example.com")
+	t.Setenv("GTKLSBW_BITWARDEN_EMAIL", "env@example.com")
 
 	loaded, err := NewManager(mgr.Path()).Load(context.Background())
 	require.NoError(t, err)
@@ -190,7 +190,7 @@ func TestLoadToleratesOnlyMissingEmail(t *testing.T) {
 func TestDefaultConfigPathUsesXDG(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/custom/xdg")
 	path := defaultConfigPath()
-	assert.Contains(t, path, "/custom/xdg/gtk4-layershell-bitwarden/config.toml")
+	assert.Contains(t, path, "/custom/xdg/gtkls-bitwarden-client/config.toml")
 }
 
 func TestSaveNilReturnsError(t *testing.T) {

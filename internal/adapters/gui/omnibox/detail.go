@@ -1,8 +1,8 @@
 package omnibox
 
 import (
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/gui/display"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/gui/display"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
 )
 
 // Detail represents a vault item detail with safe display fields.

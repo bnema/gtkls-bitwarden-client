@@ -13,8 +13,8 @@ import (
 	gobject "github.com/bnema/puregotk/v4/gobject"
 	gtklib "github.com/bnema/puregotk/v4/gtk"
 
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/adapters/paths/xdg"
-	"github.com/bnema/gtk4-layershell-bitwarden/internal/core/vault"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/paths/xdg"
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
 )
 
 const typeIconSize = 18
