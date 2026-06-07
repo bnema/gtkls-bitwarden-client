@@ -143,6 +143,14 @@ func (v *View) writeGTKClipboard(text string) error {
 	return <-done
 }
 
+func (v *View) writeClipboard(text string) error {
+	writer := clipadapter.NewSystemWriter()
+	if err := v.writeSystemClipboard(writer, text); err == nil {
+		return nil
+	}
+	return v.writeGTKClipboard(text)
+}
+
 func logOverlayError(ctx context.Context, operation string, err error) {
 	if err == nil {
 		return
@@ -245,10 +253,10 @@ func New(ctx context.Context, service in.AppService, quit func(), retainFn func(
 	v.buildUI()
 	v.clipboard = clipadapter.New(
 		func(text string) error {
-			return v.writeGTKClipboard(text)
+			return v.writeClipboard(text)
 		},
 		func() error {
-			return v.writeGTKClipboard("")
+			return v.writeClipboard("")
 		},
 	)
 	v.showUnlock()
