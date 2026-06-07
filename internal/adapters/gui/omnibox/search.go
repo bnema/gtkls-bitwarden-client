@@ -2,6 +2,7 @@ package omnibox
 
 import (
 	"strings"
+	"time"
 
 	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/gui/display"
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/config"
@@ -63,6 +64,14 @@ func SearchEnterActionForModifiers(row Row, cfg *config.Config, ctrlPressed, alt
 		return ActionCopyUsername
 	}
 	return PrimaryActionFor(row, cfg)
+}
+
+// SearchCopyOptions returns nil-safe copy behavior for search shortcuts.
+func SearchCopyOptions(cfg *config.Config) (time.Duration, bool) {
+	if cfg == nil {
+		return 0, false
+	}
+	return primaryActionClipboardTTL(cfg), cfg.Actions.CloseAfterCopy
 }
 
 // buildBadge returns a short text badge for the row item state.

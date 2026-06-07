@@ -2,6 +2,7 @@ package omnibox
 
 import (
 	"testing"
+	"time"
 
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/config"
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
@@ -76,6 +77,24 @@ func TestSearchEnterActionForModifiers_NoModifierUsesConfiguredPrimaryAction(t *
 	action := SearchEnterActionForModifiers(Row{}, cfg, false, false)
 
 	require.Equal(t, ActionCopyUsername, action)
+}
+
+func TestSearchCopyOptions_NilConfigUsesSafeDefaults(t *testing.T) {
+	ttl, closeAfterCopy := SearchCopyOptions(nil)
+
+	require.Zero(t, ttl)
+	require.False(t, closeAfterCopy)
+}
+
+func TestSearchCopyOptions_UsesConfigValues(t *testing.T) {
+	cfg := config.Default()
+	cfg.Actions.ClipboardClearAfter = 20 * time.Second
+	cfg.Actions.CloseAfterCopy = true
+
+	ttl, closeAfterCopy := SearchCopyOptions(cfg)
+
+	require.Equal(t, cfg.Actions.ClipboardClearAfter, ttl)
+	require.True(t, closeAfterCopy)
 }
 
 func TestRowsFromItems_Nil(t *testing.T) {

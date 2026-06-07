@@ -1360,7 +1360,8 @@ func (v *View) doSearchEnterAction(ctrlPressed, altPressed bool) {
 	action := SearchEnterActionForModifiers(row, cfg, ctrlPressed, altPressed)
 	switch action {
 	case ActionCopyPassword, ActionCopyUsername:
-		v.copySelectedRow(row, action, primaryActionClipboardTTL(cfg), cfg.Actions.CloseAfterCopy)
+		ttl, closeAfterCopy := SearchCopyOptions(cfg)
+		v.copySelectedRow(row, action, ttl, closeAfterCopy)
 	default:
 		detailID, opened := v.openDetailSelected()
 		if !opened {
