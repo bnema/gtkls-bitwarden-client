@@ -51,7 +51,7 @@ func (w SystemWriter) selectCommand() (clipboardCommand, bool) {
 	}
 	if w.getenv("WAYLAND_DISPLAY") != "" {
 		if path, ok := w.findCommand("wl-copy"); ok {
-			return clipboardCommand{name: path, args: []string{"--type", "text/plain", "--sensitive"}, detach: true}, true
+			return clipboardCommand{name: path, args: []string{"--foreground", "--type", "text/plain", "--sensitive"}, detach: true}, true
 		}
 	}
 	if w.getenv("DISPLAY") != "" || w.getenv("WAYLAND_DISPLAY") != "" {
@@ -124,7 +124,7 @@ func runDetachedCommand(ctx context.Context, name string, args []string, input s
 		}
 		return err
 	case <-time.After(wlCopySettleTimeout):
-		return nil
+		return cmd.Process.Release()
 	case <-ctx.Done():
 		_ = cmd.Process.Kill()
 		<-done

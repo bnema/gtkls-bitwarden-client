@@ -21,11 +21,11 @@ func TestSystemWriterSelectCommand(t *testing.T) {
 		wantOK   bool
 	}{
 		{
-			name:     "wayland prefers wl-copy with sensitive text options",
+			name:     "wayland prefers detached wl-copy with sensitive text options",
 			env:      map[string]string{"WAYLAND_DISPLAY": "wayland-1"},
 			tools:    map[string]string{"wl-copy": "/bin/wl-copy", "xclip": "/bin/xclip"},
 			wantName: "/bin/wl-copy",
-			wantArgs: []string{"--type", "text/plain", "--sensitive"},
+			wantArgs: []string{"--foreground", "--type", "text/plain", "--sensitive"},
 			wantOK:   true,
 		},
 		{
