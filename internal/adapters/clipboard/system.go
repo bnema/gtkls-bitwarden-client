@@ -25,11 +25,15 @@ func NewSystemWriter() SystemWriter {
 }
 
 func (w SystemWriter) WriteClipboard(ctx context.Context, text string) error {
+	return w.WriteClipboardBytes(ctx, []byte(text))
+}
+
+func (w SystemWriter) WriteClipboardBytes(ctx context.Context, data []byte) error {
 	command, ok := w.selectCommand()
 	if !ok {
 		return fmt.Errorf("no supported clipboard tool found; install wl-copy for Wayland or xclip/xsel for X11")
 	}
-	if err := runCommand(ctx, command, text); err != nil {
+	if err := runCommand(ctx, command, data); err != nil {
 		return fmt.Errorf("copy to clipboard with %s: %w", command.name, err)
 	}
 	return nil
@@ -69,9 +73,9 @@ func (w SystemWriter) findCommand(name string) (string, bool) {
 	return path, err == nil
 }
 
-func runCommand(ctx context.Context, command clipboardCommand, input string) error {
+func runCommand(ctx context.Context, command clipboardCommand, input []byte) error {
 	cmd := exec.CommandContext(ctx, command.name, command.args...)
-	cmd.Stdin = bytes.NewBufferString(input)
+	cmd.Stdin = bytes.NewReader(input)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

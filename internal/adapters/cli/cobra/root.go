@@ -43,6 +43,11 @@ type Options struct {
 	// is used. Injecting a test double prevents tests from touching the real
 	// OS secret service.
 	CredentialStore out.CredentialStore
+	// ClipboardHelperProvider owns clipboard bytes for the hidden internal helper.
+	// If nil, the Wayland foreground provider is used. Tests inject this to avoid
+	// touching the real desktop clipboard. Secrets must be provided as bytes,
+	// never argv/env strings.
+	ClipboardHelperProvider func(context.Context, []byte, time.Duration) error
 }
 
 // NewRootCommand creates the root CLI command with all subcommands.
@@ -132,6 +137,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 	root.AddCommand(newCacheCmd(cachePath, outboxPath))
 	root.AddCommand(newLogoutCmd(opts, cachePath, outboxPath))
 	root.AddCommand(newSyncCmd())
+	root.AddCommand(newClipboardHelperCmd(opts))
 
 	return root
 }

@@ -119,38 +119,6 @@ func isUserCanceled(err error) bool {
 	return errors.Is(err, context.Canceled)
 }
 
-func (v *View) writeSystemClipboard(writer clipadapter.SystemWriter, text string) error {
-	ctx, cancel := context.WithTimeout(v.ctx, 5*time.Second)
-	defer cancel()
-	return writer.WriteClipboard(ctx, text)
-}
-
-func (v *View) writeGTKClipboard(text string) error {
-	done := make(chan error, 1)
-	idleAddOnce(func() {
-		if v.Root == nil {
-			done <- clipadapter.ErrClipboardUnavailable
-			return
-		}
-		clipboard := v.Root.GetClipboard()
-		if clipboard == nil {
-			done <- clipadapter.ErrClipboardUnavailable
-			return
-		}
-		clipboard.SetText(text)
-		done <- nil
-	})
-	return <-done
-}
-
-func (v *View) writeClipboard(text string) error {
-	writer := clipadapter.NewSystemWriter()
-	if err := v.writeSystemClipboard(writer, text); err == nil {
-		return nil
-	}
-	return v.writeGTKClipboard(text)
-}
-
 func logOverlayError(ctx context.Context, operation string, err error) {
 	if err == nil {
 		return
@@ -251,14 +219,7 @@ func New(ctx context.Context, service in.AppService, quit func(), retainFn func(
 	}
 
 	v.buildUI()
-	v.clipboard = clipadapter.New(
-		func(text string) error {
-			return v.writeClipboard(text)
-		},
-		func() error {
-			return v.writeClipboard("")
-		},
-	)
+	v.clipboard = clipadapter.NewHelperClipboard()
 	v.showUnlock()
 
 	// Determine initial mode from configured email and auth status detail.

@@ -7,7 +7,6 @@ import (
 
 	gtklib "github.com/bnema/puregotk/v4/gtk"
 
-	clipadapter "github.com/bnema/gtkls-bitwarden-client/internal/adapters/clipboard"
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/passwordgen"
 )
 
@@ -190,16 +189,5 @@ func (v *View) copyGeneratedPassword() {
 }
 
 func (v *View) copyGeneratedPasswordText(text string, ttl time.Duration) error {
-	writer := clipadapter.NewSystemWriter()
-	if err := v.writeSystemClipboard(writer, text); err == nil {
-		if ttl > 0 {
-			time.AfterFunc(ttl, func() {
-				if err := v.writeSystemClipboard(writer, ""); err != nil {
-					logOverlayError(v.ctx, "clear_generated_password", err)
-				}
-			})
-		}
-		return nil
-	}
 	return v.clipboard.Set(v.ctx, text, ttl)
 }
