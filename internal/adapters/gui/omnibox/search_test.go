@@ -2,6 +2,7 @@ package omnibox
 
 import (
 	"testing"
+	"time"
 
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/config"
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
@@ -43,6 +44,57 @@ func TestPrimaryActionFor_OpenURLFallback(t *testing.T) {
 
 	action := PrimaryActionFor(Row{}, cfg)
 	require.Equal(t, ActionCopyPassword, action, "open_url should fall back to copy_password")
+}
+
+func TestSearchEnterActionForModifiers_AltCopiesUsername(t *testing.T) {
+	cfg := config.Default()
+	cfg.Actions.DefaultPrimaryAction = config.ActionCopyPassword
+
+	action := SearchEnterActionForModifiers(Row{}, cfg, false, true)
+
+	require.Equal(t, ActionCopyUsername, action)
+}
+
+func TestSearchEnterActionForModifiers_CtrlOpensDetail(t *testing.T) {
+	cfg := config.Default()
+	cfg.Actions.DefaultPrimaryAction = config.ActionCopyPassword
+
+	action := SearchEnterActionForModifiers(Row{}, cfg, true, false)
+
+	require.Equal(t, ActionOpenDetail, action)
+}
+
+func TestSearchEnterActionForModifiers_CtrlWinsOverAlt(t *testing.T) {
+	action := SearchEnterActionForModifiers(Row{}, config.Default(), true, true)
+
+	require.Equal(t, ActionOpenDetail, action)
+}
+
+func TestSearchEnterActionForModifiers_NoModifierUsesConfiguredPrimaryAction(t *testing.T) {
+	cfg := config.Default()
+	cfg.Actions.DefaultPrimaryAction = config.ActionCopyUsername
+
+	action := SearchEnterActionForModifiers(Row{}, cfg, false, false)
+
+	require.Equal(t, ActionCopyUsername, action)
+}
+
+func TestSearchCopyOptions_NilConfigUsesSafeDefaults(t *testing.T) {
+	ttl, closeAfterCopy := SearchCopyOptions(nil)
+
+	require.Zero(t, ttl)
+	require.False(t, closeAfterCopy)
+}
+
+func TestSearchCopyOptions_UsesConfigValues(t *testing.T) {
+	cfg := config.Default()
+	cfg.Actions.ClipboardClearAfter = 20 * time.Second
+	cfg.Actions.CloseAfterCopy = true
+
+	ttl, closeAfterCopy := SearchCopyOptions(cfg)
+
+	require.Equal(t, cfg.Actions.ClipboardClearAfter, ttl)
+	require.True(t, closeAfterCopy)
 }
 
 func TestRowsFromItems_Nil(t *testing.T) {

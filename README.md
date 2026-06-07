@@ -170,6 +170,7 @@ On Wayland, the launcher re-execs itself with `libgtk4-layer-shell.so.0` in `LD_
 | typing | Search | Live search with debounce |
 | `Up` / `Down` | Search | Navigate result rows |
 | `Enter` | Search | Perform configured primary action |
+| `Alt` + `Enter` | Search | Copy username |
 | `Ctrl` + `Enter` | Search | Open detail view |
 | `Ctrl` + `N` | Search | Create a new login item |
 | `Escape` | Any | Quit the overlay |

@@ -119,30 +119,6 @@ func isUserCanceled(err error) bool {
 	return errors.Is(err, context.Canceled)
 }
 
-func (v *View) writeSystemClipboard(writer clipadapter.SystemWriter, text string) error {
-	ctx, cancel := context.WithTimeout(v.ctx, 5*time.Second)
-	defer cancel()
-	return writer.WriteClipboard(ctx, text)
-}
-
-func (v *View) writeGTKClipboard(text string) error {
-	done := make(chan error, 1)
-	idleAddOnce(func() {
-		if v.Root == nil {
-			done <- clipadapter.ErrClipboardUnavailable
-			return
-		}
-		clipboard := v.Root.GetClipboard()
-		if clipboard == nil {
-			done <- clipadapter.ErrClipboardUnavailable
-			return
-		}
-		clipboard.SetText(text)
-		done <- nil
-	})
-	return <-done
-}
-
 func logOverlayError(ctx context.Context, operation string, err error) {
 	if err == nil {
 		return
@@ -243,14 +219,7 @@ func New(ctx context.Context, service in.AppService, quit func(), retainFn func(
 	}
 
 	v.buildUI()
-	v.clipboard = clipadapter.New(
-		func(text string) error {
-			return v.writeGTKClipboard(text)
-		},
-		func() error {
-			return v.writeGTKClipboard("")
-		},
-	)
+	v.clipboard = clipadapter.NewHelperClipboard()
 	v.showUnlock()
 
 	// Determine initial mode from configured email and auth status detail.
@@ -403,7 +372,7 @@ func (v *View) buildUI() {
 	v.statusLabel.SetHalign(gtklib.AlignStartValue)
 	v.statusLabel.SetValign(gtklib.AlignCenterValue)
 	v.statusBox.Append(&v.statusLabel.Widget)
-	for _, hint := range []string{"Enter copy", "^Enter details", "^N add", "Esc close"} {
+	for _, hint := range []string{"Enter copy", "Alt+Enter user", "^Enter details", "^N add", "Esc close"} {
 		hintText := hint
 		hintLabel := gtklib.NewLabel(&hintText)
 		hintLabel.GetStyleContext().AddClass("glsbw-hint")
@@ -701,19 +670,10 @@ func (v *View) AttachKeyController(window *gtklib.Window) {
 				idleAddOnce(func() { v.renderRows() })
 				return true
 			case gdk.KEY_Return, gdk.KEY_KP_Enter:
-				if mod&gdk.ControlMaskValue != 0 {
-					v.mu.Unlock()
-					detailID, opened := v.openDetailSelected()
-					if !opened {
-						return true
-					}
-					v.setMode(ModeDetail)
-					v.loadDetail(detailID)
-					idleAddOnce(func() { v.render() })
-					return true
-				}
+				ctrlPressed := mod&gdk.ControlMaskValue != 0
+				altPressed := mod&gdk.AltMaskValue != 0
 				v.mu.Unlock()
-				v.doPrimaryAction()
+				v.doSearchEnterAction(ctrlPressed, altPressed)
 				return true
 			case gdk.KEY_n:
 				if mod&gdk.ControlMaskValue != 0 {
@@ -1350,8 +1310,13 @@ func (v *View) filterRowsLocked(rows []Row) []Row {
 	return filtered
 }
 
-// doPrimaryAction performs the primary action on the selected row.
+// doPrimaryAction performs the configured primary action on the selected row.
 func (v *View) doPrimaryAction() {
+	v.doSearchEnterAction(false, false)
+}
+
+// doSearchEnterAction performs the Enter shortcut action on the selected row.
+func (v *View) doSearchEnterAction(ctrlPressed, altPressed bool) {
 	v.mu.Lock()
 	row, ok := v.state.SelectedRow()
 	if !ok {
@@ -1361,10 +1326,11 @@ func (v *View) doPrimaryAction() {
 	v.mu.Unlock()
 
 	cfg := v.service.Config()
-	action := PrimaryActionFor(row, cfg)
+	action := SearchEnterActionForModifiers(row, cfg, ctrlPressed, altPressed)
 	switch action {
 	case ActionCopyPassword, ActionCopyUsername:
-		v.copySelectedRow(row, action, primaryActionClipboardTTL(cfg), cfg.Actions.CloseAfterCopy)
+		ttl, closeAfterCopy := SearchCopyOptions(cfg)
+		v.copySelectedRow(row, action, ttl, closeAfterCopy)
 	default:
 		detailID, opened := v.openDetailSelected()
 		if !opened {
