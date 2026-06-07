@@ -52,6 +52,19 @@ func PrimaryActionFor(row Row, cfg *config.Config) Action {
 	return ActionCopyPassword
 }
 
+// SearchEnterActionForModifiers returns the action for Enter in search mode.
+// Ctrl+Enter is reserved for opening details; Alt+Enter copies the username;
+// plain Enter keeps the configured primary action.
+func SearchEnterActionForModifiers(row Row, cfg *config.Config, ctrlPressed, altPressed bool) Action {
+	if ctrlPressed {
+		return ActionOpenDetail
+	}
+	if altPressed {
+		return ActionCopyUsername
+	}
+	return PrimaryActionFor(row, cfg)
+}
+
 // buildBadge returns a short text badge for the row item state.
 func buildBadge(item vault.Item) string {
 	var badges []string

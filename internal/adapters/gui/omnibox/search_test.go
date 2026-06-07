@@ -45,6 +45,39 @@ func TestPrimaryActionFor_OpenURLFallback(t *testing.T) {
 	require.Equal(t, ActionCopyPassword, action, "open_url should fall back to copy_password")
 }
 
+func TestSearchEnterActionForModifiers_AltCopiesUsername(t *testing.T) {
+	cfg := config.Default()
+	cfg.Actions.DefaultPrimaryAction = config.ActionCopyPassword
+
+	action := SearchEnterActionForModifiers(Row{}, cfg, false, true)
+
+	require.Equal(t, ActionCopyUsername, action)
+}
+
+func TestSearchEnterActionForModifiers_CtrlOpensDetail(t *testing.T) {
+	cfg := config.Default()
+	cfg.Actions.DefaultPrimaryAction = config.ActionCopyPassword
+
+	action := SearchEnterActionForModifiers(Row{}, cfg, true, false)
+
+	require.Equal(t, ActionOpenDetail, action)
+}
+
+func TestSearchEnterActionForModifiers_CtrlWinsOverAlt(t *testing.T) {
+	action := SearchEnterActionForModifiers(Row{}, config.Default(), true, true)
+
+	require.Equal(t, ActionOpenDetail, action)
+}
+
+func TestSearchEnterActionForModifiers_NoModifierUsesConfiguredPrimaryAction(t *testing.T) {
+	cfg := config.Default()
+	cfg.Actions.DefaultPrimaryAction = config.ActionCopyUsername
+
+	action := SearchEnterActionForModifiers(Row{}, cfg, false, false)
+
+	require.Equal(t, ActionCopyUsername, action)
+}
+
 func TestRowsFromItems_Nil(t *testing.T) {
 	rows := RowsFromItems(nil)
 	require.Nil(t, rows)

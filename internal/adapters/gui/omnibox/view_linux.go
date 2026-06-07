@@ -403,7 +403,7 @@ func (v *View) buildUI() {
 	v.statusLabel.SetHalign(gtklib.AlignStartValue)
 	v.statusLabel.SetValign(gtklib.AlignCenterValue)
 	v.statusBox.Append(&v.statusLabel.Widget)
-	for _, hint := range []string{"Enter copy", "^Enter details", "^N add", "Esc close"} {
+	for _, hint := range []string{"Enter copy", "Alt+Enter user", "^Enter details", "^N add", "Esc close"} {
 		hintText := hint
 		hintLabel := gtklib.NewLabel(&hintText)
 		hintLabel.GetStyleContext().AddClass("glsbw-hint")
@@ -701,19 +701,10 @@ func (v *View) AttachKeyController(window *gtklib.Window) {
 				idleAddOnce(func() { v.renderRows() })
 				return true
 			case gdk.KEY_Return, gdk.KEY_KP_Enter:
-				if mod&gdk.ControlMaskValue != 0 {
-					v.mu.Unlock()
-					detailID, opened := v.openDetailSelected()
-					if !opened {
-						return true
-					}
-					v.setMode(ModeDetail)
-					v.loadDetail(detailID)
-					idleAddOnce(func() { v.render() })
-					return true
-				}
+				ctrlPressed := mod&gdk.ControlMaskValue != 0
+				altPressed := mod&gdk.AltMaskValue != 0
 				v.mu.Unlock()
-				v.doPrimaryAction()
+				v.doSearchEnterAction(ctrlPressed, altPressed)
 				return true
 			case gdk.KEY_n:
 				if mod&gdk.ControlMaskValue != 0 {
@@ -1350,8 +1341,13 @@ func (v *View) filterRowsLocked(rows []Row) []Row {
 	return filtered
 }
 
-// doPrimaryAction performs the primary action on the selected row.
+// doPrimaryAction performs the configured primary action on the selected row.
 func (v *View) doPrimaryAction() {
+	v.doSearchEnterAction(false, false)
+}
+
+// doSearchEnterAction performs the Enter shortcut action on the selected row.
+func (v *View) doSearchEnterAction(ctrlPressed, altPressed bool) {
 	v.mu.Lock()
 	row, ok := v.state.SelectedRow()
 	if !ok {
@@ -1361,7 +1357,7 @@ func (v *View) doPrimaryAction() {
 	v.mu.Unlock()
 
 	cfg := v.service.Config()
-	action := PrimaryActionFor(row, cfg)
+	action := SearchEnterActionForModifiers(row, cfg, ctrlPressed, altPressed)
 	switch action {
 	case ActionCopyPassword, ActionCopyUsername:
 		v.copySelectedRow(row, action, primaryActionClipboardTTL(cfg), cfg.Actions.CloseAfterCopy)
