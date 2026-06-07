@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -21,11 +20,11 @@ func TestSystemWriterSelectCommand(t *testing.T) {
 		wantOK   bool
 	}{
 		{
-			name:     "wayland prefers detached wl-copy with plain text options",
+			name:     "wayland uses wl-copy native background provider with plain text options",
 			env:      map[string]string{"WAYLAND_DISPLAY": "wayland-1"},
 			tools:    map[string]string{"wl-copy": "/bin/wl-copy", "xclip": "/bin/xclip"},
 			wantName: "/bin/wl-copy",
-			wantArgs: []string{"--foreground", "--type", "text/plain"},
+			wantArgs: []string{"--type", "text/plain"},
 			wantOK:   true,
 		},
 		{
@@ -102,36 +101,4 @@ func TestSystemWriterWriteClipboardRunsCommandWithInput(t *testing.T) {
 	got, err := os.ReadFile(outPath)
 	require.NoError(t, err)
 	require.Equal(t, "secret", string(got))
-}
-
-func TestSystemWriterWriteClipboardReturnsWhenWlCopyKeepsServing(t *testing.T) {
-	binDir := t.TempDir()
-	outPath := filepath.Join(t.TempDir(), "clipboard.txt")
-	toolPath := filepath.Join(binDir, "wl-copy")
-	script := "#!/bin/sh\ncat > \"$CLIPBOARD_TEST_OUT\"\nsleep 1\n"
-	require.NoError(t, os.WriteFile(toolPath, []byte(script), 0o700))
-	t.Setenv("CLIPBOARD_TEST_OUT", outPath)
-
-	writer := SystemWriter{
-		lookPath: func(name string) (string, error) {
-			if name == "wl-copy" {
-				return toolPath, nil
-			}
-			return "", errors.New("not found")
-		},
-		getenv: func(name string) string {
-			if name == "WAYLAND_DISPLAY" {
-				return "wayland-1"
-			}
-			return ""
-		},
-	}
-
-	started := time.Now()
-	require.NoError(t, writer.WriteClipboard(context.Background(), "secret"))
-	require.Less(t, time.Since(started), 750*time.Millisecond)
-	require.Eventually(t, func() bool {
-		got, err := os.ReadFile(outPath)
-		return err == nil && string(got) == "secret"
-	}, time.Second, 10*time.Millisecond)
 }
