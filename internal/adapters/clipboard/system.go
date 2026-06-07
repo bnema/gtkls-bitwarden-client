@@ -51,7 +51,7 @@ func (w SystemWriter) selectCommand() (clipboardCommand, bool) {
 	}
 	if w.getenv("WAYLAND_DISPLAY") != "" {
 		if path, ok := w.findCommand("wl-copy"); ok {
-			return clipboardCommand{name: path, args: []string{"--foreground", "--type", "text/plain", "--sensitive"}, detach: true}, true
+			return clipboardCommand{name: path, args: []string{"--foreground", "--type", "text/plain"}, detach: true}, true
 		}
 	}
 	if w.getenv("DISPLAY") != "" || w.getenv("WAYLAND_DISPLAY") != "" {
