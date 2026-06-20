@@ -2,6 +2,7 @@ package omnibox
 
 import (
 	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/gui/display"
+	coresync "github.com/bnema/gtkls-bitwarden-client/internal/core/sync"
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
 )
 
@@ -19,6 +20,7 @@ type Detail struct {
 	TOTPPresent     bool
 	Attachments     []string
 	Conflict        bool
+	ConflictID      string
 	Pending         bool
 	Deleted         bool
 
@@ -33,6 +35,26 @@ type Detail struct {
 	IdentityName string
 }
 
+// ConflictResolutionAction describes one safe UI action for a conflicted item.
+type ConflictResolutionAction struct {
+	Label      string
+	Resolution coresync.ConflictResolution
+}
+
+// ConflictResolutionActions returns the available resolution actions for a
+// conflicted detail. It returns none until the item carries a concrete
+// conflict ID that ResolveConflict can use.
+func ConflictResolutionActions(detail Detail) []ConflictResolutionAction {
+	if !detail.Conflict || detail.ConflictID == "" {
+		return nil
+	}
+	return []ConflictResolutionAction{
+		{Label: "Keep local", Resolution: coresync.ResolutionKeepLocal},
+		{Label: "Use remote", Resolution: coresync.ResolutionKeepRemote},
+		{Label: "Duplicate local", Resolution: coresync.ResolutionDuplicateLocal},
+	}
+}
+
 // DetailFromItem converts a vault Item to a safe Detail.
 func DetailFromItem(item vault.Item) Detail {
 	d := Detail{
@@ -40,6 +62,7 @@ func DetailFromItem(item vault.Item) Detail {
 		Title:        item.Name,
 		Type:         string(item.Type),
 		Conflict:     item.SyncStatus == vault.SyncStatusConflict,
+		ConflictID:   item.ConflictID,
 		Pending:      item.SyncStatus == vault.SyncStatusPending,
 		Deleted:      item.Deleted,
 		NotesPresent: item.Notes != "",

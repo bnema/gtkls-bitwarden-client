@@ -3,6 +3,7 @@ package omnibox
 import (
 	"testing"
 
+	coresync "github.com/bnema/gtkls-bitwarden-client/internal/core/sync"
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
 	"github.com/stretchr/testify/require"
 )
@@ -132,11 +133,27 @@ func TestDetailFromItem_ConflictPendingDeleted(t *testing.T) {
 		Type:       vault.ItemTypeLogin,
 		Deleted:    true,
 		SyncStatus: vault.SyncStatusConflict,
+		ConflictID: "conflict-1",
 		Login:      &vault.Login{Username: "test"},
 	}
 
 	d := DetailFromItem(item)
 	require.True(t, d.Conflict)
+	require.Equal(t, "conflict-1", d.ConflictID)
 	require.True(t, d.Deleted)
 	require.False(t, d.Pending)
+}
+
+func TestConflictResolutionActions_OnlyForConflictedItemsWithConflictID(t *testing.T) {
+	require.Empty(t, ConflictResolutionActions(Detail{}))
+	require.Empty(t, ConflictResolutionActions(Detail{Conflict: true}))
+
+	actions := ConflictResolutionActions(Detail{Conflict: true, ConflictID: "conflict-1"})
+	require.Len(t, actions, 3)
+	require.Equal(t, "Keep local", actions[0].Label)
+	require.Equal(t, coresync.ResolutionKeepLocal, actions[0].Resolution)
+	require.Equal(t, "Use remote", actions[1].Label)
+	require.Equal(t, coresync.ResolutionKeepRemote, actions[1].Resolution)
+	require.Equal(t, "Duplicate local", actions[2].Label)
+	require.Equal(t, coresync.ResolutionDuplicateLocal, actions[2].Resolution)
 }

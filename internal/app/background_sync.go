@@ -245,7 +245,7 @@ func (s *Service) syncOnceCacheOnly(ctx context.Context) {
 			return
 		}
 
-		s.emit(ConflictDetected, fmt.Sprintf("%d conflict(s) detected", len(conflicts)))
+		s.emitCount(ConflictDetected, fmt.Sprintf("%d conflict(s) detected", len(conflicts)), len(conflicts))
 		return
 	}
 

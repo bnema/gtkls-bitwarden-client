@@ -853,6 +853,42 @@ func TestSyncConflictMarksItem(t *testing.T) {
 	require.Equal(t, 1, conflictCount)
 }
 
+func TestSyncConflictDetectedEventIncludesCount(t *testing.T) {
+	fr := &fakeRemote{
+		revisionRev: "new-rev",
+		syncItems: []vault.Item{
+			{ID: "item-1", Name: "RemoteOne", RevisionDate: time.Now(), Type: vault.ItemTypeLogin},
+			{ID: "item-2", Name: "RemoteTwo", RevisionDate: time.Now(), Type: vault.ItemTypeSecureNote},
+		},
+		syncRev: "new-rev",
+	}
+
+	svc := NewService(Deps{Remote: fr})
+	svc.mu.Lock()
+	svc.state = auth.LockStateUnlocked
+	svc.items = []vault.Item{
+		{ID: "item-1", Name: "LocalOne", Type: vault.ItemTypeLogin},
+		{ID: "item-2", Name: "LocalTwo", Type: vault.ItemTypeSecureNote},
+	}
+	svc.outbox = []coresync.OutboxMutation{
+		{ID: "m1", Kind: coresync.MutationUpdate, ItemID: "item-1"},
+		{ID: "m2", Kind: coresync.MutationUpdate, ItemID: "item-2"},
+	}
+	svc.mu.Unlock()
+
+	svc.syncOnce(context.Background())
+
+	events := consumeEvents(t, svc.events, 50*time.Millisecond)
+	var conflictEvent Event
+	for _, evt := range events {
+		if evt.Kind == ConflictDetected {
+			conflictEvent = evt
+		}
+	}
+	require.Equal(t, ConflictDetected, conflictEvent.Kind)
+	require.Equal(t, 2, conflictEvent.Count)
+}
+
 // ---------------------------------------------------------------------------
 // Config copy / UpdateConfig tests
 // ---------------------------------------------------------------------------
@@ -1447,6 +1483,38 @@ func TestResolveConflictDuplicateLocalQueuesCreate(t *testing.T) {
 
 	// Verify no conflicts remain.
 	require.Len(t, svc.conflictsForTest(), 0)
+}
+
+func TestResolveConflictEmitsRemainingConflictCount(t *testing.T) {
+	svc := NewService(Deps{})
+	svc.mu.Lock()
+	svc.state = auth.LockStateUnlocked
+	svc.items = []vault.Item{
+		{ID: "item-1", Name: "One", Type: vault.ItemTypeLogin, SyncStatus: vault.SyncStatusConflict, ConflictID: "c1"},
+		{ID: "item-2", Name: "Two", Type: vault.ItemTypeSecureNote, SyncStatus: vault.SyncStatusConflict, ConflictID: "c2"},
+	}
+	svc.outbox = []coresync.OutboxMutation{
+		{ID: "m1", Kind: coresync.MutationUpdate, ItemID: "item-1"},
+		{ID: "m2", Kind: coresync.MutationUpdate, ItemID: "item-2"},
+	}
+	svc.conflicts = []coresync.Conflict{
+		{ID: "c1", ItemID: "item-1", MutationID: "m1", Reason: coresync.ConflictBothModified},
+		{ID: "c2", ItemID: "item-2", MutationID: "m2", Reason: coresync.ConflictBothModified},
+	}
+	svc.mu.Unlock()
+
+	err := svc.ResolveConflict(context.Background(), "c1", coresync.ResolutionKeepLocal)
+	require.NoError(t, err)
+
+	events := consumeEvents(t, svc.events, 50*time.Millisecond)
+	var conflictEvent Event
+	for _, evt := range events {
+		if evt.Kind == ConflictDetected {
+			conflictEvent = evt
+		}
+	}
+	require.Equal(t, ConflictDetected, conflictEvent.Kind)
+	require.Equal(t, 1, conflictEvent.Count)
 }
 
 func TestResolveConflictKeepRemoteInCacheOnlySessionUpdatesEncryptedCache(t *testing.T) {

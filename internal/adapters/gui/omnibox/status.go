@@ -67,6 +67,19 @@ func ReadyStatus(itemCount int) Status {
 	return Status{Text: fmt.Sprintf("Vault ready — %d %s", itemCount, plural(itemCount, "item", "items")), ItemCount: itemCount}
 }
 
+// StatusAfterRowsLoaded returns the status to show after a list refresh. A row
+// refresh caused by a conflict must not hide the conflict indicator with a
+// generic ready message; the list can be usable while the status still directs
+// the user to resolve conflicts.
+func StatusAfterRowsLoaded(current Status, itemCount int) Status {
+	if current.ConflictCount > 0 {
+		current.ItemCount = itemCount
+		current.Syncing = false
+		return current
+	}
+	return ReadyStatus(itemCount)
+}
+
 // EmptyRowsText returns the placeholder shown when the current search list has
 // no rows. The query text is deliberately not echoed because search terms may
 // contain domains, emails, usernames, or other sensitive fragments.
@@ -84,7 +97,7 @@ func EmptyRowsText(query string, status Status) string {
 // ShouldRefreshRowsOnEvent reports whether a backend event means the visible
 // search results may now be stale and should be reloaded from the service.
 func ShouldRefreshRowsOnEvent(kind in.EventKind) bool {
-	return kind == in.IndexReady || kind == in.SyncUpdated
+	return kind == in.IndexReady || kind == in.SyncUpdated || kind == in.ConflictDetected
 }
 
 func refreshRowsDelayForEvent(kind in.EventKind) time.Duration {

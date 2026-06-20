@@ -115,11 +115,15 @@ func NewService(deps Deps) *Service {
 // emit sends a non-blocking event to the events channel. Safe for concurrent
 // use and safe to call after Shutdown.
 func (s *Service) emit(kind EventKind, message string) {
+	s.emitCount(kind, message, 0)
+}
+
+func (s *Service) emitCount(kind EventKind, message string, count int) {
 	s.eventMu.RLock()
 	closed := s.eventsClosed
 	if !closed {
 		select {
-		case s.events <- Event{Kind: kind, Message: message}:
+		case s.events <- Event{Kind: kind, Message: message, Count: count}:
 		default:
 		}
 	}
@@ -2534,7 +2538,12 @@ func (s *Service) ResolveConflict(ctx context.Context, conflictID string, resolu
 
 	s.rebuildIndexLocked()
 	s.saveCacheAsyncLocked(ctx)
-	s.emit(SyncUpdated, "conflict resolved")
+	remainingConflicts := len(s.conflicts)
+	if remainingConflicts > 0 {
+		s.emitCount(ConflictDetected, fmt.Sprintf("%d conflict(s) remaining", remainingConflicts), remainingConflicts)
+	} else {
+		s.emit(SyncUpdated, "conflict resolved")
+	}
 	return nil
 }
 
@@ -2692,6 +2701,7 @@ func (s *Service) resolveConflictCacheOnly(ctx context.Context, key []byte, conf
 	if !removed {
 		// Already absent: treat cache-only conflict cleanup as idempotent.
 	}
+	remainingConflictCount := len(s.conflicts)
 	s.pendingRemoteItems = nil
 	s.pendingRemoteFolders = nil
 	s.items = nil
@@ -2700,7 +2710,11 @@ func (s *Service) resolveConflictCacheOnly(ctx context.Context, key []byte, conf
 	s.index = nil
 	s.mu.Unlock()
 
-	s.emit(SyncUpdated, "conflict resolved")
+	if remainingConflictCount > 0 {
+		s.emitCount(ConflictDetected, fmt.Sprintf("%d conflict(s) remaining", remainingConflictCount), remainingConflictCount)
+	} else {
+		s.emit(SyncUpdated, "conflict resolved")
+	}
 	return nil
 }
 
@@ -2847,8 +2861,9 @@ func (s *Service) syncOnce(ctx context.Context) {
 			}
 		}
 		s.rebuildIndexLocked()
+		conflictCount := len(s.conflicts)
 		s.mu.Unlock()
-		s.emit(ConflictDetected, fmt.Sprintf("%d conflict(s) detected", len(conflicts)))
+		s.emitCount(ConflictDetected, fmt.Sprintf("%d conflict(s) detected", conflictCount), conflictCount)
 		return
 	}
 

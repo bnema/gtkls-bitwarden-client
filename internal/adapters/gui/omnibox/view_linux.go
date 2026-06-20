@@ -18,6 +18,7 @@ import (
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/auth"
 	safelog "github.com/bnema/gtkls-bitwarden-client/internal/core/logging"
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/session"
+	coresync "github.com/bnema/gtkls-bitwarden-client/internal/core/sync"
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
 	"github.com/bnema/gtkls-bitwarden-client/internal/ports/in"
 	"github.com/bnema/gtkls-bitwarden-client/internal/ports/out"
@@ -1241,7 +1242,7 @@ func (v *View) loadAllItems() {
 			rows = v.filterRowsLocked(rows)
 			v.state.Query = ""
 			v.state.SetRows(rows)
-			v.state.SetStatus(ReadyStatus(len(items)))
+			v.state.SetStatus(StatusAfterRowsLoaded(v.state.Status, len(items)))
 			v.mu.Unlock()
 			v.renderRows()
 			v.renderStatus()
@@ -1634,6 +1635,16 @@ func (v *View) renderDetail(detail Detail) {
 		cStr := "⚠ Conflict"
 		cLabel := gtklib.NewLabel(&cStr)
 		v.detailBox.Append(&cLabel.Widget)
+		for _, action := range ConflictResolutionActions(detail) {
+			action := action
+			resolveBtn := gtklib.NewButtonWithLabel(action.Label)
+			resolveCb := func(_ gtklib.Button) {
+				v.resolveConflict(detail.ConflictID, action.Resolution)
+			}
+			handler := resolveBtn.ConnectClicked(&resolveCb)
+			v.retainDynamic(&resolveBtn.Object, handler, resolveCb)
+			v.detailBox.Append(&resolveBtn.Widget)
+		}
 	}
 	if detail.Pending {
 		pStr := "⏳ Pending"
@@ -1727,6 +1738,38 @@ func (v *View) renderDetail(detail Detail) {
 	}
 
 	v.detailBox.SetVisible(true)
+}
+
+func (v *View) resolveConflict(conflictID string, resolution coresync.ConflictResolution) {
+	if conflictID == "" {
+		return
+	}
+	v.mu.Lock()
+	v.state.SetStatus(Status{Text: "Resolving conflict…", Syncing: true})
+	v.mu.Unlock()
+	v.renderStatus()
+
+	go func() {
+		if err := v.service.ResolveConflict(v.ctx, conflictID, resolution); err != nil {
+			logOverlayError(v.ctx, "resolve_conflict", err)
+			idleAddOnce(func() {
+				v.mu.Lock()
+				v.state.SetStatus(Status{Text: genericOperationError, Error: genericOperationError})
+				v.mu.Unlock()
+				v.renderStatus()
+			})
+			return
+		}
+
+		idleAddOnce(func() {
+			v.setMode(ModeSearch)
+			v.mu.Lock()
+			v.state.DetailID = ""
+			v.mu.Unlock()
+			v.render()
+			v.refreshSearchRows()
+		})
+	}()
 }
 
 // renderForm populates the form box with editable entries for the given item.
