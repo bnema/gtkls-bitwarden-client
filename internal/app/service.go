@@ -1308,6 +1308,19 @@ func (s *Service) Items(ctx context.Context) ([]vault.Item, error) {
 	return result, nil
 }
 
+// Conflicts returns a copy of unresolved sync conflicts. It exposes only
+// conflict metadata needed to drive resolution UI, never vault item fields.
+func (s *Service) Conflicts(ctx context.Context) ([]coresync.Conflict, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state != auth.LockStateUnlocked {
+		return nil, cerrors.ErrLocked
+	}
+	result := make([]coresync.Conflict, len(s.conflicts))
+	copy(result, s.conflicts)
+	return result, nil
+}
+
 // Get returns a single vault item by ID. Resident unlocked state is
 // authoritative when present; cache-backed sessions fall back to the encrypted
 // cache when resident plaintext is intentionally absent. Returns ErrNotFound

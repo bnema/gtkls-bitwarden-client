@@ -196,15 +196,19 @@ func (v *View) backMode() Mode {
 	return v.state.Mode
 }
 
-func (v *View) openDetailSelected() (string, bool) {
+func (v *View) openDetailSelected() (Row, bool) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
+	row, ok := v.state.SelectedRow()
+	if !ok {
+		return Row{}, false
+	}
 	v.state.OpenDetail()
 	if v.state.Mode != ModeDetail || v.state.DetailID == "" {
-		return "", false
+		return Row{}, false
 	}
-	return v.state.DetailID, true
+	return row, true
 }
 
 // New creates a new View, builds all GTK widgets, queries auth status to choose
@@ -1236,7 +1240,11 @@ func (v *View) loadAllItems() {
 			})
 			return
 		}
-		rows := RowsFromItems(items)
+		conflicts, err := v.service.Conflicts(v.ctx)
+		if err != nil {
+			logOverlayError(v.ctx, "load_conflicts", err)
+		}
+		rows := RowsWithConflictPlaceholders(RowsFromItems(items), conflicts)
 		idleAddOnce(func() {
 			v.mu.Lock()
 			rows = v.filterRowsLocked(rows)
@@ -1285,7 +1293,11 @@ func (v *View) doSearch(query string) {
 			})
 			return
 		}
-		rows := RowsFromScored(results)
+		conflicts, err := v.service.Conflicts(v.ctx)
+		if err != nil {
+			logOverlayError(v.ctx, "search_conflicts", err)
+		}
+		rows := RowsWithConflictPlaceholders(RowsFromScored(results), conflicts)
 		idleAddOnce(func() {
 			v.mu.Lock()
 			rows = v.filterRowsLocked(rows)
@@ -1304,7 +1316,7 @@ func (v *View) filterRowsLocked(rows []Row) []Row {
 	want := string(categoryItemType(v.activeCategory))
 	filtered := rows[:0]
 	for _, row := range rows {
-		if row.Type == want {
+		if row.Type == want || (row.Conflict && row.ConflictID != "" && row.Type == "") {
 			filtered = append(filtered, row)
 		}
 	}
@@ -1333,12 +1345,12 @@ func (v *View) doSearchEnterAction(ctrlPressed, altPressed bool) {
 		ttl, closeAfterCopy := SearchCopyOptions(cfg)
 		v.copySelectedRow(row, action, ttl, closeAfterCopy)
 	default:
-		detailID, opened := v.openDetailSelected()
+		detailRow, opened := v.openDetailSelected()
 		if !opened {
 			return
 		}
 		v.setMode(ModeDetail)
-		v.loadDetail(detailID)
+		v.loadDetail(detailRow)
 		idleAddOnce(func() { v.render() })
 	}
 }
@@ -1387,11 +1399,30 @@ func (v *View) copySelectedRow(row Row, action Action, ttl time.Duration, closeA
 	}()
 }
 
-// loadDetail fetches a single item and renders the detail view.
-func (v *View) loadDetail(id string) {
+// loadDetail fetches a single item and renders the detail view. Conflict
+// placeholder rows can still render a resolvable detail when item data is not
+// loaded.
+func (v *View) loadDetail(row Row) {
 	go func() {
-		item, err := v.service.Get(v.ctx, id)
+		item, err := v.service.Get(v.ctx, row.ID)
 		if err != nil {
+			if row.ConflictID != "" {
+				logOverlayError(v.ctx, "load_conflict_detail_item", err)
+				idleAddOnce(func() {
+					v.mu.Lock()
+					v.currentItem = vault.Item{}
+					v.mu.Unlock()
+					v.renderDetail(Detail{
+						ID:           row.ID,
+						Title:        row.Title,
+						Type:         "Conflict",
+						Conflict:     true,
+						ConflictID:   row.ConflictID,
+						ConflictOnly: true,
+					})
+				})
+				return
+			}
 			logOverlayError(v.ctx, "load_detail", err)
 			idleAddOnce(func() {
 				v.mu.Lock()
@@ -1657,84 +1688,86 @@ func (v *View) renderDetail(detail Detail) {
 		v.detailBox.Append(&dLabel.Widget)
 	}
 
-	// Edit button
-	editBtn := gtklib.NewButtonWithLabel("Edit")
-	editCb := func(_ gtklib.Button) {
-		v.mu.Lock()
-		item := v.currentItem
-		v.mu.Unlock()
-		v.setMode(ModeForm)
-		idleAddOnce(func() {
-			v.renderForm(item)
-			v.render()
-			v.focusFormInitial()
-		})
-	}
-	handler0 := editBtn.ConnectClicked(&editCb)
-	v.retainDynamic(&editBtn.Object, handler0, editCb)
-	v.detailBox.Append(&editBtn.Widget)
+	if !detail.ConflictOnly {
+		// Edit button
+		editBtn := gtklib.NewButtonWithLabel("Edit")
+		editCb := func(_ gtklib.Button) {
+			v.mu.Lock()
+			item := v.currentItem
+			v.mu.Unlock()
+			v.setMode(ModeForm)
+			idleAddOnce(func() {
+				v.renderForm(item)
+				v.render()
+				v.focusFormInitial()
+			})
+		}
+		handler0 := editBtn.ConnectClicked(&editCb)
+		v.retainDynamic(&editBtn.Object, handler0, editCb)
+		v.detailBox.Append(&editBtn.Widget)
 
-	// Trash/Restore/Delete buttons
-	if !detail.Deleted {
-		trashBtn := gtklib.NewButtonWithLabel("Trash")
-		trashCb := func(_ gtklib.Button) {
-			go func() {
-				if err := v.service.Trash(v.ctx, detail.ID); err != nil {
-					logOverlayError(v.ctx, "trash", err)
-					v.showError(genericOperationError)
-					return
-				}
-				idleAddOnce(func() {
-					v.mu.Lock()
-					v.state.Back()
-					v.mu.Unlock()
-					v.render()
-				})
-			}()
-		}
-		handler := trashBtn.ConnectClicked(&trashCb)
-		v.retainDynamic(&trashBtn.Object, handler, trashCb)
-		v.detailBox.Append(&trashBtn.Widget)
-	} else {
-		restoreBtn := gtklib.NewButtonWithLabel("Restore")
-		restoreCb := func(_ gtklib.Button) {
-			go func() {
-				if _, err := v.service.Restore(v.ctx, detail.ID); err != nil {
-					logOverlayError(v.ctx, "restore", err)
-					v.showError(genericOperationError)
-					return
-				}
-				idleAddOnce(func() {
-					v.mu.Lock()
-					v.state.Back()
-					v.mu.Unlock()
-					v.render()
-				})
-			}()
-		}
-		handler := restoreBtn.ConnectClicked(&restoreCb)
-		v.retainDynamic(&restoreBtn.Object, handler, restoreCb)
-		v.detailBox.Append(&restoreBtn.Widget)
+		// Trash/Restore/Delete buttons
+		if !detail.Deleted {
+			trashBtn := gtklib.NewButtonWithLabel("Trash")
+			trashCb := func(_ gtklib.Button) {
+				go func() {
+					if err := v.service.Trash(v.ctx, detail.ID); err != nil {
+						logOverlayError(v.ctx, "trash", err)
+						v.showError(genericOperationError)
+						return
+					}
+					idleAddOnce(func() {
+						v.mu.Lock()
+						v.state.Back()
+						v.mu.Unlock()
+						v.render()
+					})
+				}()
+			}
+			handler := trashBtn.ConnectClicked(&trashCb)
+			v.retainDynamic(&trashBtn.Object, handler, trashCb)
+			v.detailBox.Append(&trashBtn.Widget)
+		} else {
+			restoreBtn := gtklib.NewButtonWithLabel("Restore")
+			restoreCb := func(_ gtklib.Button) {
+				go func() {
+					if _, err := v.service.Restore(v.ctx, detail.ID); err != nil {
+						logOverlayError(v.ctx, "restore", err)
+						v.showError(genericOperationError)
+						return
+					}
+					idleAddOnce(func() {
+						v.mu.Lock()
+						v.state.Back()
+						v.mu.Unlock()
+						v.render()
+					})
+				}()
+			}
+			handler := restoreBtn.ConnectClicked(&restoreCb)
+			v.retainDynamic(&restoreBtn.Object, handler, restoreCb)
+			v.detailBox.Append(&restoreBtn.Widget)
 
-		deleteBtn := gtklib.NewButtonWithLabel("Delete permanently")
-		deleteCb := func(_ gtklib.Button) {
-			go func() {
-				if err := v.service.Delete(v.ctx, detail.ID); err != nil {
-					logOverlayError(v.ctx, "delete", err)
-					v.showError(genericOperationError)
-					return
-				}
-				idleAddOnce(func() {
-					v.mu.Lock()
-					v.state.Back()
-					v.mu.Unlock()
-					v.render()
-				})
-			}()
+			deleteBtn := gtklib.NewButtonWithLabel("Delete permanently")
+			deleteCb := func(_ gtklib.Button) {
+				go func() {
+					if err := v.service.Delete(v.ctx, detail.ID); err != nil {
+						logOverlayError(v.ctx, "delete", err)
+						v.showError(genericOperationError)
+						return
+					}
+					idleAddOnce(func() {
+						v.mu.Lock()
+						v.state.Back()
+						v.mu.Unlock()
+						v.render()
+					})
+				}()
+			}
+			handler = deleteBtn.ConnectClicked(&deleteCb)
+			v.retainDynamic(&deleteBtn.Object, handler, deleteCb)
+			v.detailBox.Append(&deleteBtn.Widget)
 		}
-		handler = deleteBtn.ConnectClicked(&deleteCb)
-		v.retainDynamic(&deleteBtn.Object, handler, deleteCb)
-		v.detailBox.Append(&deleteBtn.Widget)
 	}
 
 	v.detailBox.SetVisible(true)

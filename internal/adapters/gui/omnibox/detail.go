@@ -21,6 +21,7 @@ type Detail struct {
 	Attachments     []string
 	Conflict        bool
 	ConflictID      string
+	ConflictOnly    bool
 	Pending         bool
 	Deleted         bool
 

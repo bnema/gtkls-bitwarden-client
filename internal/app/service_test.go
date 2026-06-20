@@ -616,6 +616,29 @@ func TestSearchLockedReturnsError(t *testing.T) {
 	require.ErrorIs(t, err, coreerrors.ErrLocked)
 }
 
+func TestConflictsLockedReturnsError(t *testing.T) {
+	svc := NewService(Deps{})
+	_, err := svc.Conflicts(context.Background())
+	require.ErrorIs(t, err, coreerrors.ErrLocked)
+}
+
+func TestConflictsReturnsCopy(t *testing.T) {
+	svc := NewService(Deps{})
+	svc.mu.Lock()
+	svc.state = auth.LockStateUnlocked
+	svc.conflicts = []coresync.Conflict{{ID: "c1", ItemID: "item-1", MutationID: "m1", Reason: coresync.ConflictBothModified}}
+	svc.mu.Unlock()
+
+	conflicts, err := svc.Conflicts(context.Background())
+	require.NoError(t, err)
+	require.Len(t, conflicts, 1)
+	conflicts[0].ID = "mutated"
+
+	again, err := svc.Conflicts(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "c1", again[0].ID)
+}
+
 func TestUnlockInstallsCacheIndexBeforeSync(t *testing.T) {
 	gitItem := vault.Item{
 		ID:   "item-1",

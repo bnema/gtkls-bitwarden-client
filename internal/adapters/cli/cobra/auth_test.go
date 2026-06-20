@@ -95,7 +95,10 @@ func (f *fakeAuthService) HardLock(_ context.Context, _ string) error { return n
 func (f *fakeAuthService) Search(context.Context, string, int) ([]vault.ScoredItem, error) {
 	return nil, nil
 }
-func (f *fakeAuthService) Items(context.Context) ([]vault.Item, error)     { return nil, nil }
+func (f *fakeAuthService) Items(context.Context) ([]vault.Item, error) { return nil, nil }
+func (f *fakeAuthService) Conflicts(context.Context) ([]coresync.Conflict, error) {
+	return nil, nil
+}
 func (f *fakeAuthService) Get(context.Context, string) (vault.Item, error) { return vault.Item{}, nil }
 func (f *fakeAuthService) Create(_ context.Context, item vault.Item) (vault.Item, error) {
 	return item, nil

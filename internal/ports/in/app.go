@@ -49,6 +49,7 @@ type AppService interface {
 	HardLock(ctx context.Context, email string) error
 	Search(ctx context.Context, query string, limit int) ([]vault.ScoredItem, error)
 	Items(ctx context.Context) ([]vault.Item, error)
+	Conflicts(ctx context.Context) ([]sync.Conflict, error)
 	Get(ctx context.Context, id string) (vault.Item, error)
 	Create(ctx context.Context, item vault.Item) (vault.Item, error)
 	Update(ctx context.Context, id string, item vault.Item) (vault.Item, error)
