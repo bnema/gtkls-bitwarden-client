@@ -639,6 +639,52 @@ func TestConflictsReturnsCopy(t *testing.T) {
 	require.Equal(t, "c1", again[0].ID)
 }
 
+func TestConflictDetailReturnsLocalAndPendingRemoteSnapshots(t *testing.T) {
+	local := vault.Item{ID: "item-1", Name: "Local", Type: vault.ItemTypeLogin, Login: &vault.Login{Username: "local-user"}}
+	remote := vault.Item{ID: "item-1", Name: "Remote", Type: vault.ItemTypeLogin, Login: &vault.Login{Username: "remote-user"}}
+	svc := NewService(Deps{})
+	svc.mu.Lock()
+	svc.state = auth.LockStateUnlocked
+	svc.items = []vault.Item{local}
+	svc.pendingRemoteItems = []vault.Item{remote}
+	svc.conflicts = []coresync.Conflict{{ID: "c1", ItemID: "item-1", MutationID: "m1", Reason: coresync.ConflictBothModified}}
+	svc.mu.Unlock()
+
+	detail, err := svc.ConflictDetail(context.Background(), "c1")
+	require.NoError(t, err)
+	require.Equal(t, "c1", detail.Conflict.ID)
+	require.NotNil(t, detail.LocalItem)
+	require.NotNil(t, detail.RemoteItem)
+	require.Equal(t, "Local", detail.LocalItem.Name)
+	require.Equal(t, "Remote", detail.RemoteItem.Name)
+
+	detail.LocalItem.Name = "mutated"
+	again, err := svc.ConflictDetail(context.Background(), "c1")
+	require.NoError(t, err)
+	require.Equal(t, "Local", again.LocalItem.Name)
+}
+
+func TestConflictDetailCacheOnlyFetchesRemoteSummary(t *testing.T) {
+	cacheKey := []byte("test-cache-key-32-bytes-long!")
+	local := vault.Item{ID: "item-1", Name: "Local Cache", Type: vault.ItemTypeLogin}
+	remote := vault.Item{ID: "item-1", Name: "Remote Sync", Type: vault.ItemTypeLogin}
+	outbox := []coresync.OutboxMutation{{ID: "m1", Kind: coresync.MutationUpdate, ItemID: "item-1"}}
+	snap := buildCacheSnapshotWithKeyAndOutboxAndConflicts(t, cacheKey, []vault.Item{local}, nil, outbox, []coresync.Conflict{{ID: "c1", ItemID: "item-1", MutationID: "m1", Reason: coresync.ConflictBothModified}})
+
+	svc := NewService(Deps{Cache: &fakeCache{data: &snap}, SecretBox: &fakeSecretBox{}, Remote: &fakeRemote{syncItems: []vault.Item{remote}}})
+	svc.mu.Lock()
+	svc.state = auth.LockStateUnlocked
+	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
+	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.conflicts = []coresync.Conflict{{ID: "c1", ItemID: "item-1", MutationID: "m1", Reason: coresync.ConflictBothModified}}
+	svc.mu.Unlock()
+
+	detail, err := svc.ConflictDetail(context.Background(), "c1")
+	require.NoError(t, err)
+	require.Equal(t, "Local Cache", detail.LocalItem.Name)
+	require.Equal(t, "Remote Sync", detail.RemoteItem.Name)
+}
+
 func TestUnlockInstallsCacheIndexBeforeSync(t *testing.T) {
 	gitItem := vault.Item{
 		ID:   "item-1",

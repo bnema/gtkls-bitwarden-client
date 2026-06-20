@@ -1,6 +1,7 @@
 package omnibox
 
 import (
+	"strings"
 	"testing"
 
 	coresync "github.com/bnema/gtkls-bitwarden-client/internal/core/sync"
@@ -156,4 +157,103 @@ func TestConflictResolutionActions_OnlyForConflictedItemsWithConflictID(t *testi
 	require.Equal(t, coresync.ResolutionKeepRemote, actions[1].Resolution)
 	require.Equal(t, "Duplicate local", actions[2].Label)
 	require.Equal(t, coresync.ResolutionDuplicateLocal, actions[2].Resolution)
+}
+
+func TestDetailFromConflictDetailShowsSafeLocalAndRemoteSummaries(t *testing.T) {
+	local := vault.Item{
+		ID:    "item-1",
+		Name:  "Local Site",
+		Type:  vault.ItemTypeLogin,
+		Notes: "local private notes",
+		Login: &vault.Login{
+			Username: "local-user",
+			Password: "local-password-secret",
+			TOTP:     "local-totp-secret",
+			URIs:     []vault.URI{{URI: "https://local.example/login?token=query-secret"}},
+		},
+		Fields: []vault.Field{
+			{Name: "visible-field", Value: "visible-secret"},
+			{Name: "hidden-field", Value: "hidden-secret", Hidden: true},
+		},
+	}
+	remote := vault.Item{
+		ID:   "item-1",
+		Name: "Remote Site",
+		Type: vault.ItemTypeLogin,
+		Login: &vault.Login{
+			Username: "remote-user",
+			Password: "remote-password-secret",
+			TOTP:     "remote-totp-secret",
+			URIs:     []vault.URI{{URI: "https://remote.example/sign-in?secret=value"}},
+		},
+	}
+
+	d := DetailFromConflictDetail(coresync.ConflictDetail{
+		Conflict:   coresync.Conflict{ID: "conflict-1", ItemID: "item-1", Reason: coresync.ConflictBothModified},
+		LocalItem:  &local,
+		RemoteItem: &remote,
+	})
+
+	require.True(t, d.Conflict)
+	require.True(t, d.ConflictOnly)
+	require.Equal(t, "conflict-1", d.ConflictID)
+	require.Equal(t, "Local Site", d.Title)
+	require.Empty(t, d.URI, "conflict detail must not render raw item URI before safe summaries")
+	require.False(t, d.PasswordPresent, "conflict detail must not render secret presence outside safe summaries")
+	require.False(t, d.TOTPPresent, "conflict detail must not render secret presence outside safe summaries")
+	require.Len(t, d.ConflictSummaries, 2)
+
+	localText := conflictSummaryText(d.ConflictSummaries[0])
+	require.Contains(t, localText, "Name: Local Site")
+	require.Contains(t, localText, "Username: local-user")
+	require.Contains(t, localText, "URI: local.example")
+	require.Contains(t, localText, "Password: stored (hidden)")
+	require.Contains(t, localText, "TOTP: stored (hidden)")
+	require.Contains(t, localText, "Notes: present (hidden)")
+	require.Contains(t, localText, "Visible custom fields: visible-field")
+	require.Contains(t, localText, "Hidden custom fields: 1")
+	require.NotContains(t, localText, "local-password-secret")
+	require.NotContains(t, localText, "local-totp-secret")
+	require.NotContains(t, localText, "query-secret")
+	require.NotContains(t, localText, "visible-secret")
+	require.NotContains(t, localText, "hidden-secret")
+
+	remoteText := conflictSummaryText(d.ConflictSummaries[1])
+	require.Contains(t, remoteText, "Name: Remote Site")
+	require.Contains(t, remoteText, "Username: remote-user")
+	require.Contains(t, remoteText, "URI: remote.example")
+	require.Contains(t, remoteText, "Password: stored (hidden)")
+	require.Contains(t, remoteText, "TOTP: stored (hidden)")
+	require.NotContains(t, remoteText, "remote-password-secret")
+	require.NotContains(t, remoteText, "remote-totp-secret")
+	require.NotContains(t, remoteText, "secret=value")
+}
+
+func TestDetailFromConflictDetailShowsMissingRemoteClearly(t *testing.T) {
+	local := vault.Item{ID: "item-1", Name: "Local Only", Type: vault.ItemTypeSecureNote, Notes: "secret note"}
+
+	d := DetailFromConflictDetail(coresync.ConflictDetail{
+		Conflict:      coresync.Conflict{ID: "conflict-1", ItemID: "item-1", Reason: coresync.ConflictRemoteDeleted},
+		LocalItem:     &local,
+		RemoteDeleted: true,
+	})
+
+	require.Len(t, d.ConflictSummaries, 2)
+	require.Equal(t, "Remote", d.ConflictSummaries[1].Label)
+	require.Equal(t, "Remote item was deleted", d.ConflictSummaries[1].MissingText)
+	require.NotContains(t, conflictSummaryText(d.ConflictSummaries[0]), "secret note")
+}
+
+func conflictSummaryText(summary ConflictItemSummary) string {
+	var b strings.Builder
+	b.WriteString(summary.Label)
+	b.WriteString("\n")
+	b.WriteString(summary.MissingText)
+	for _, field := range summary.Fields {
+		b.WriteString("\n")
+		b.WriteString(field.Label)
+		b.WriteString(": ")
+		b.WriteString(field.Value)
+	}
+	return b.String()
 }

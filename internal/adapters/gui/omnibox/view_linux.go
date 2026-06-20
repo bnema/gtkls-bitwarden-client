@@ -1404,10 +1404,25 @@ func (v *View) copySelectedRow(row Row, action Action, ttl time.Duration, closeA
 // loaded.
 func (v *View) loadDetail(row Row) {
 	go func() {
+		if row.ConflictID != "" {
+			conflictDetail, err := v.service.ConflictDetail(v.ctx, row.ConflictID)
+			if err == nil {
+				if conflictDetail.LocalItem != nil {
+					v.mu.Lock()
+					v.currentItem = *conflictDetail.LocalItem
+					v.mu.Unlock()
+				}
+				idleAddOnce(func() {
+					v.renderDetail(DetailFromConflictDetail(conflictDetail))
+				})
+				return
+			}
+			logOverlayError(v.ctx, "load_conflict_detail", err)
+		}
+
 		item, err := v.service.Get(v.ctx, row.ID)
 		if err != nil {
 			if row.ConflictID != "" {
-				logOverlayError(v.ctx, "load_conflict_detail_item", err)
 				idleAddOnce(func() {
 					v.mu.Lock()
 					v.currentItem = vault.Item{}
@@ -1658,6 +1673,23 @@ func (v *View) renderDetail(detail Detail) {
 			fStr := "  " + fname
 			fLabel := gtklib.NewLabel(&fStr)
 			v.detailBox.Append(&fLabel.Widget)
+		}
+	}
+
+	for _, summary := range detail.ConflictSummaries {
+		header := summary.Label
+		headerLabel := gtklib.NewLabel(&header)
+		headerLabel.GetStyleContext().AddClass("glsbw-detail-subtitle")
+		v.detailBox.Append(&headerLabel.Widget)
+		if summary.MissingText != "" {
+			missingLabel := gtklib.NewLabel(&summary.MissingText)
+			v.detailBox.Append(&missingLabel.Widget)
+			continue
+		}
+		for _, field := range summary.Fields {
+			fieldText := field.Label + ": " + field.Value
+			fieldLabel := gtklib.NewLabel(&fieldText)
+			v.detailBox.Append(&fieldLabel.Widget)
 		}
 	}
 

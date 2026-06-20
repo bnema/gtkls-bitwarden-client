@@ -50,6 +50,7 @@ type AppService interface {
 	Search(ctx context.Context, query string, limit int) ([]vault.ScoredItem, error)
 	Items(ctx context.Context) ([]vault.Item, error)
 	Conflicts(ctx context.Context) ([]sync.Conflict, error)
+	ConflictDetail(ctx context.Context, conflictID string) (sync.ConflictDetail, error)
 	Get(ctx context.Context, id string) (vault.Item, error)
 	Create(ctx context.Context, item vault.Item) (vault.Item, error)
 	Update(ctx context.Context, id string, item vault.Item) (vault.Item, error)

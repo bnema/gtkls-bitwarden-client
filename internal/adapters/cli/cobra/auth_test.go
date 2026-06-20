@@ -99,6 +99,9 @@ func (f *fakeAuthService) Items(context.Context) ([]vault.Item, error) { return 
 func (f *fakeAuthService) Conflicts(context.Context) ([]coresync.Conflict, error) {
 	return nil, nil
 }
+func (f *fakeAuthService) ConflictDetail(context.Context, string) (coresync.ConflictDetail, error) {
+	return coresync.ConflictDetail{}, nil
+}
 func (f *fakeAuthService) Get(context.Context, string) (vault.Item, error) { return vault.Item{}, nil }
 func (f *fakeAuthService) Create(_ context.Context, item vault.Item) (vault.Item, error) {
 	return item, nil

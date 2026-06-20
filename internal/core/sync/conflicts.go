@@ -1,5 +1,7 @@
 package sync
 
+import "github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
+
 // ConflictReason describes why a conflict occurred.
 type ConflictReason string
 
@@ -24,6 +26,17 @@ type Conflict struct {
 	ItemID     string
 	MutationID string
 	Reason     ConflictReason
+}
+
+// ConflictDetail contains the best available local and remote snapshots for a
+// conflict. Item pointers are optional because delete conflicts may have only
+// one side available.
+type ConflictDetail struct {
+	Conflict      Conflict
+	LocalItem     *vault.Item
+	RemoteItem    *vault.Item
+	LocalDeleted  bool
+	RemoteDeleted bool
 }
 
 // isLocalNonDelete returns true if the mutation is not a delete or trash.

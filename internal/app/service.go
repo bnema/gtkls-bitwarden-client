@@ -1321,6 +1321,51 @@ func (s *Service) Conflicts(ctx context.Context) ([]coresync.Conflict, error) {
 	return result, nil
 }
 
+// ConflictDetail returns the best available local and remote snapshots for one
+// unresolved conflict. It returns copies so callers cannot mutate service state.
+func (s *Service) ConflictDetail(ctx context.Context, conflictID string) (coresync.ConflictDetail, error) {
+	s.mu.Lock()
+	if s.state != auth.LockStateUnlocked {
+		s.mu.Unlock()
+		return coresync.ConflictDetail{}, cerrors.ErrLocked
+	}
+	conflict, ok := findConflictByID(s.conflicts, conflictID)
+	if !ok {
+		s.mu.Unlock()
+		return coresync.ConflictDetail{}, cerrors.ErrNotFound
+	}
+	cacheOnly := s.backgroundSyncMode == backgroundSyncCacheOnly || (s.items == nil && s.folders == nil && s.outbox == nil && len(s.cacheKey) > 0)
+	key := append([]byte(nil), s.cacheKey...)
+	residentItems := cloneVaultItems(s.items)
+	residentOutbox := append([]coresync.OutboxMutation(nil), s.outbox...)
+	pendingRemoteItems := cloneVaultItems(s.pendingRemoteItems)
+	s.mu.Unlock()
+	defer clear(key)
+
+	localItems := residentItems
+	outbox := residentOutbox
+	remoteItems := pendingRemoteItems
+
+	if cacheOnly {
+		snap, err := s.loadDecryptedCacheSnapshot(ctx, key)
+		if err != nil {
+			return coresync.ConflictDetail{}, err
+		}
+		localItems = cloneVaultItems(snap.Items)
+		outbox = append([]coresync.OutboxMutation(nil), snap.Outbox...)
+		remoteItems = nil
+	}
+
+	if len(remoteItems) == 0 && conflict.Reason != coresync.ConflictRemoteDeleted && s.deps.Remote != nil {
+		items, _, _, err := s.deps.Remote.Sync(ctx)
+		if err == nil {
+			remoteItems = cloneVaultItems(items)
+		}
+	}
+
+	return conflictDetailFromSnapshots(conflict, localItems, remoteItems, outbox), nil
+}
+
 // Get returns a single vault item by ID. Resident unlocked state is
 // authoritative when present; cache-backed sessions fall back to the encrypted
 // cache when resident plaintext is intentionally absent. Returns ErrNotFound
@@ -1672,6 +1717,110 @@ func markVaultItemDeleted(items []vault.Item, id string, deleted bool) []vault.I
 		}
 	}
 	return out
+}
+
+func findConflictByID(conflicts []coresync.Conflict, id string) (coresync.Conflict, bool) {
+	for _, conflict := range conflicts {
+		if conflict.ID == id {
+			return conflict, true
+		}
+	}
+	return coresync.Conflict{}, false
+}
+
+func cloneVaultItems(items []vault.Item) []vault.Item {
+	if items == nil {
+		return nil
+	}
+	out := make([]vault.Item, len(items))
+	for i, item := range items {
+		out[i] = cloneVaultItem(item)
+	}
+	return out
+}
+
+func cloneVaultItem(item vault.Item) vault.Item {
+	clone := item
+	if item.Login != nil {
+		login := *item.Login
+		login.URIs = append([]vault.URI(nil), item.Login.URIs...)
+		clone.Login = &login
+	}
+	if item.SecureNote != nil {
+		secureNote := *item.SecureNote
+		clone.SecureNote = &secureNote
+	}
+	if item.Card != nil {
+		card := *item.Card
+		clone.Card = &card
+	}
+	if item.Identity != nil {
+		identity := *item.Identity
+		clone.Identity = &identity
+	}
+	clone.Fields = append([]vault.Field(nil), item.Fields...)
+	clone.Attachments = append([]vault.Attachment(nil), item.Attachments...)
+	return clone
+}
+
+func conflictDetailFromSnapshots(conflict coresync.Conflict, localItems, remoteItems []vault.Item, outbox []coresync.OutboxMutation) coresync.ConflictDetail {
+	detail := coresync.ConflictDetail{Conflict: conflict}
+	for _, item := range localItems {
+		if item.ID == conflict.ItemID {
+			local := cloneVaultItem(item)
+			detail.LocalItem = &local
+			break
+		}
+	}
+	for _, item := range remoteItems {
+		if item.ID == conflict.ItemID {
+			remote := cloneVaultItem(item)
+			remote.SyncStatus = vault.SyncStatusSynced
+			remote.ConflictID = ""
+			detail.RemoteItem = &remote
+			break
+		}
+	}
+	if detail.LocalItem == nil {
+		if item, ok := itemFromConflictMutation(conflict, outbox); ok {
+			detail.LocalItem = &item
+		}
+	}
+	mutationKind := conflictMutationKind(conflict, outbox)
+	detail.LocalDeleted = mutationKind == coresync.MutationDelete || mutationKind == coresync.MutationTrash
+	detail.RemoteDeleted = conflict.Reason == coresync.ConflictRemoteDeleted
+	return detail
+}
+
+func itemFromConflictMutation(conflict coresync.Conflict, outbox []coresync.OutboxMutation) (vault.Item, bool) {
+	for _, mutation := range outbox {
+		if mutation.ID != conflict.MutationID && mutation.ItemID != conflict.ItemID {
+			continue
+		}
+		if mutation.Kind != coresync.MutationCreate && mutation.Kind != coresync.MutationUpdate {
+			continue
+		}
+		var item vault.Item
+		if err := json.Unmarshal(mutation.Payload, &item); err != nil {
+			return vault.Item{}, false
+		}
+		if item.ID == "" {
+			item.ID = mutation.ItemID
+		}
+		item.SyncStatus = vault.SyncStatusConflict
+		item.ConflictID = conflict.ID
+		return cloneVaultItem(item), true
+	}
+	return vault.Item{}, false
+}
+
+func conflictMutationKind(conflict coresync.Conflict, outbox []coresync.OutboxMutation) coresync.MutationKind {
+	for _, mutation := range outbox {
+		if mutation.ID == conflict.MutationID || mutation.ItemID == conflict.ItemID {
+			return mutation.Kind
+		}
+	}
+	return ""
 }
 
 func removeVaultItem(items []vault.Item, id string) []vault.Item {
