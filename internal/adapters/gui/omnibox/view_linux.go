@@ -1699,7 +1699,6 @@ func (v *View) renderDetail(detail Detail) {
 		cLabel := gtklib.NewLabel(&cStr)
 		v.detailBox.Append(&cLabel.Widget)
 		for _, action := range ConflictResolutionActions(detail) {
-			action := action
 			resolveBtn := gtklib.NewButtonWithLabel(action.Label)
 			resolveCb := func(_ gtklib.Button) {
 				v.resolveConflict(detail.ConflictID, action.Resolution)

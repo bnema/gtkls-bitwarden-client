@@ -805,6 +805,43 @@ func TestResolveConflictKeepLocalThenSyncNowReplaysCacheOnlyOutbox(t *testing.T)
 	require.Empty(t, svc.conflictsForTest())
 }
 
+func TestResolveConflictKeepLocalCacheOnlyFetchesRemoteRevisionWhenMissing(t *testing.T) {
+	cacheKey := []byte("test-cache-key-32-bytes-long!")
+	local := vault.Item{ID: "item-1", Name: "Local Cache", Type: vault.ItemTypeLogin}
+	remoteAtConflict := vault.Item{ID: "item-1", Name: "Remote At Conflict", Type: vault.ItemTypeLogin, RevisionDate: time.Now()}
+	remoteAfterReplay := vault.Item{ID: "item-1", Name: "Local Cache Replayed", Type: vault.ItemTypeLogin, RevisionDate: time.Now().Add(time.Minute)}
+	outbox := []coresync.OutboxMutation{{ID: "m1", Kind: coresync.MutationUpdate, ItemID: "item-1", BaseRevision: "old-rev", Payload: []byte(`{"id":"item-1","name":"Local Cache","type":"login"}`)}}
+	conflict := coresync.Conflict{ID: "c1", ItemID: "item-1", MutationID: "m1", Reason: coresync.ConflictBothModified}
+	snap := buildCacheSnapshotWithKeyAndOutboxAndConflicts(t, cacheKey, []vault.Item{local}, nil, outbox, []coresync.Conflict{conflict})
+	var syncCalls int
+	fr := &fakeRemote{revisionRev: "rev-2"}
+	fr.onSync = func(context.Context) ([]vault.Item, []vault.Folder, string, error) {
+		syncCalls++
+		if syncCalls <= 2 {
+			return []vault.Item{remoteAtConflict}, nil, "rev-2", nil
+		}
+		return []vault.Item{remoteAfterReplay}, nil, "rev-3", nil
+	}
+	svc := NewService(Deps{Remote: fr, Cache: &fakeCache{data: &snap}, SecretBox: &fakeSecretBox{}})
+	svc.mu.Lock()
+	svc.state = auth.LockStateUnlocked
+	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
+	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.conflicts = []coresync.Conflict{conflict}
+	svc.mu.Unlock()
+
+	require.NoError(t, svc.ResolveConflict(context.Background(), conflict.ID, coresync.ResolutionKeepLocal))
+	require.NoError(t, svc.SyncNow(context.Background()))
+
+	items, _, outboxAfter, err := svc.loadCachedVaultWithKey(context.Background(), cacheKey)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.Equal(t, "Local Cache Replayed", items[0].Name)
+	require.Empty(t, outboxAfter)
+	require.Empty(t, svc.conflictsForTest())
+	require.Equal(t, 3, syncCalls)
+}
+
 func TestSyncNowCacheOnlyUpdatesEncryptedCache(t *testing.T) {
 	cacheKey := []byte("test-cache-key-32-bytes-long!")
 	stale := vault.Item{ID: "item-1", Name: "Stale Cache", Type: vault.ItemTypeLogin}

@@ -2810,7 +2810,10 @@ func (s *Service) resolveConflictCacheOnly(ctx context.Context, key []byte, conf
 	snap.Conflicts = append([]coresync.Conflict(nil), remainingConflicts...)
 
 	var remoteItems []vault.Item
-	if resolution == coresync.ResolutionKeepRemote || resolution == coresync.ResolutionDuplicateLocal {
+	needsRemoteItems := resolution == coresync.ResolutionKeepRemote ||
+		resolution == coresync.ResolutionDuplicateLocal ||
+		(resolution == coresync.ResolutionKeepLocal && conflict.RemoteRevision == "")
+	if needsRemoteItems {
 		if s.deps.Remote == nil {
 			return fmt.Errorf("app: conflict resolve: remote unavailable")
 		}
@@ -2846,8 +2849,12 @@ func (s *Service) resolveConflictCacheOnly(ctx context.Context, key []byte, conf
 				break
 			}
 		}
-		if conflict.RemoteRevision != "" {
-			setOutboxBaseRevisionForItem(snap.Outbox, conflict.ItemID, conflict.RemoteRevision)
+		remoteRevision := conflict.RemoteRevision
+		if remoteRevision == "" {
+			remoteRevision = revisionForItem(remoteItems, conflict.ItemID)
+		}
+		if remoteRevision != "" {
+			setOutboxBaseRevisionForItem(snap.Outbox, conflict.ItemID, remoteRevision)
 		}
 
 	case coresync.ResolutionDuplicateLocal:
