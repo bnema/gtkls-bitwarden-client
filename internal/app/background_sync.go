@@ -42,6 +42,28 @@ func (s *Service) SetBackgroundSyncSuspended(ctx context.Context, suspended bool
 	return nil
 }
 
+// SyncNow performs one immediate sync using the current unlocked session mode.
+// Resident sessions refresh resident state; cache-only sessions refresh the
+// encrypted cache without installing plaintext resident items.
+func (s *Service) SyncNow(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	if err := s.ensureUnlocked(); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	cacheOnly := s.backgroundSyncMode == backgroundSyncCacheOnly || (s.items == nil && s.folders == nil && s.outbox == nil && len(s.cacheKey) > 0)
+	s.mu.Unlock()
+
+	if cacheOnly {
+		return s.syncOnceCacheOnly(ctx)
+	}
+	return s.syncOnce(ctx)
+}
+
 func (s *Service) backgroundSyncEnabledLocked() bool {
 	return s.cfg != nil && s.cfg.Security.BackgroundSync.Enabled
 }
@@ -171,12 +193,12 @@ func (s *Service) syncOnceByMode(ctx context.Context, mode backgroundSyncMode) {
 }
 
 func (s *Service) syncOnceResident(ctx context.Context) {
-	s.syncOnce(ctx)
+	_ = s.syncOnce(ctx)
 }
 
-func (s *Service) syncOnceCacheOnly(ctx context.Context) {
+func (s *Service) syncOnceCacheOnly(ctx context.Context) error {
 	if s.deps.Remote == nil || s.deps.Cache == nil || s.deps.SecretBox == nil {
-		return
+		return nil
 	}
 
 	s.emit(SyncChecking, "checking remote revision")
@@ -184,7 +206,7 @@ func (s *Service) syncOnceCacheOnly(ctx context.Context) {
 	s.mu.Lock()
 	if err := s.ensureUnlocked(); err != nil || s.backgroundSyncSuspended {
 		s.mu.Unlock()
-		return
+		return err
 	}
 	expectedSeq := s.saveSeq
 	key := append([]byte(nil), s.cacheKey...)
@@ -192,24 +214,24 @@ func (s *Service) syncOnceCacheOnly(ctx context.Context) {
 	defer clear(key)
 
 	if len(key) == 0 {
-		return
+		return nil
 	}
 
 	snap, err := s.loadDecryptedCacheSnapshot(ctx, key)
 	if err != nil {
 		s.emit(SyncFailed, cerrors.ShortMessage(err))
-		return
+		return err
 	}
 	if len(snap.Salt) == 0 {
 		err = fmt.Errorf("cache save: no cache salt available")
 		s.emit(SyncFailed, cerrors.ShortMessage(err))
-		return
+		return err
 	}
 
 	remoteItems, remoteFolders, remoteRev, err := s.deps.Remote.Sync(ctx)
 	if err != nil {
 		s.emit(SyncFailed, cerrors.ShortMessage(err))
-		return
+		return err
 	}
 
 	remoteChanges := make([]coresync.RemoteChange, 0, len(remoteItems))
@@ -242,23 +264,23 @@ func (s *Service) syncOnceCacheOnly(ctx context.Context) {
 
 		if err := s.saveExplicitCacheSnapshot(ctx, key, snap, expectedSeq); err != nil {
 			s.emit(SyncFailed, cerrors.ShortMessage(err))
-			return
+			return err
 		}
 
 		s.emitCount(ConflictDetected, fmt.Sprintf("%d conflict(s) detected", len(conflicts)), len(conflicts))
-		return
+		return nil
 	}
 
 	if len(snap.Outbox) > 0 {
 		if err := s.replayOutbox(ctx, snap.Outbox); err != nil {
 			s.emit(SyncFailed, cerrors.ShortMessage(err))
-			return
+			return err
 		}
 
 		remoteItems, remoteFolders, remoteRev, err = s.deps.Remote.Sync(ctx)
 		if err != nil {
 			s.emit(SyncFailed, cerrors.ShortMessage(err))
-			return
+			return err
 		}
 	}
 
@@ -272,7 +294,7 @@ func (s *Service) syncOnceCacheOnly(ctx context.Context) {
 	snap.Conflicts = nil
 	if err := s.saveExplicitCacheSnapshot(ctx, key, snap, expectedSeq); err != nil {
 		s.emit(SyncFailed, cerrors.ShortMessage(err))
-		return
+		return err
 	}
 
 	s.mu.Lock()
@@ -282,4 +304,5 @@ func (s *Service) syncOnceCacheOnly(ctx context.Context) {
 	s.mu.Unlock()
 
 	s.emit(SyncUpdated, fmt.Sprintf("sync complete (rev: %s)", remoteRev))
+	return nil
 }

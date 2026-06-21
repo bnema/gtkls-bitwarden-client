@@ -66,6 +66,10 @@ func DetectConflicts(local []OutboxMutation, remote []RemoteChange) []Conflict {
 				continue // different items, no conflict
 			}
 
+			if l.BaseRevision != "" && r.Revision != "" && l.BaseRevision == r.Revision && !r.Deleted {
+				continue
+			}
+
 			switch {
 			case isLocalNonDelete(l.Kind) && !r.Deleted:
 				conflicts = append(conflicts, Conflict{

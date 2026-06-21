@@ -1825,6 +1825,16 @@ func (v *View) resolveConflict(conflictID string, resolution coresync.ConflictRe
 			})
 			return
 		}
+		if err := v.service.SyncNow(v.ctx); err != nil {
+			logOverlayError(v.ctx, "sync_after_conflict_resolve", err)
+			idleAddOnce(func() {
+				v.mu.Lock()
+				v.state.SetStatus(Status{Text: genericOperationError, Error: genericOperationError})
+				v.mu.Unlock()
+				v.renderStatus()
+			})
+			return
+		}
 
 		idleAddOnce(func() {
 			v.setMode(ModeSearch)

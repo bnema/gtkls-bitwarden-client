@@ -1823,6 +1823,23 @@ func conflictMutationKind(conflict coresync.Conflict, outbox []coresync.OutboxMu
 	return ""
 }
 
+func revisionForItem(items []vault.Item, id string) string {
+	for _, item := range items {
+		if item.ID == id && !item.RevisionDate.IsZero() {
+			return item.RevisionDate.Format(time.RFC3339)
+		}
+	}
+	return ""
+}
+
+func setOutboxBaseRevisionForItem(outbox []coresync.OutboxMutation, itemID, revision string) {
+	for i := range outbox {
+		if outbox[i].ItemID == itemID {
+			outbox[i].BaseRevision = revision
+		}
+	}
+}
+
 func removeVaultItem(items []vault.Item, id string) []vault.Item {
 	out := make([]vault.Item, 0, len(items))
 	for _, item := range items {
@@ -2640,6 +2657,9 @@ func (s *Service) ResolveConflict(ctx context.Context, conflictID string, resolu
 				break
 			}
 		}
+		if remoteRevision := revisionForItem(s.pendingRemoteItems, conflict.ItemID); remoteRevision != "" {
+			setOutboxBaseRevisionForItem(s.outbox, conflict.ItemID, remoteRevision)
+		}
 
 	case coresync.ResolutionDuplicateLocal:
 		// Clone the conflicting local item into a new pending create. The original
@@ -2753,7 +2773,7 @@ func (s *Service) resolveConflictCacheOnly(ctx context.Context, key []byte, conf
 	snap.Conflicts = append([]coresync.Conflict(nil), remainingConflicts...)
 
 	var remoteItems []vault.Item
-	if resolution == coresync.ResolutionKeepRemote || resolution == coresync.ResolutionDuplicateLocal {
+	if resolution == coresync.ResolutionKeepRemote || resolution == coresync.ResolutionKeepLocal || resolution == coresync.ResolutionDuplicateLocal {
 		if s.deps.Remote == nil {
 			return fmt.Errorf("app: conflict resolve: remote unavailable")
 		}
@@ -2788,6 +2808,9 @@ func (s *Service) resolveConflictCacheOnly(ctx context.Context, key []byte, conf
 				snap.Items[i].ConflictID = ""
 				break
 			}
+		}
+		if remoteRevision := revisionForItem(remoteItems, conflict.ItemID); remoteRevision != "" {
+			setOutboxBaseRevisionForItem(snap.Outbox, conflict.ItemID, remoteRevision)
 		}
 
 	case coresync.ResolutionDuplicateLocal:
@@ -2940,7 +2963,7 @@ func (s *Service) replayOutbox(ctx context.Context, outbox []coresync.OutboxMuta
 
 // syncOnce performs a single sync cycle: checks remote revision, pushes local
 // mutations, pulls remote changes, and detects conflicts.
-func (s *Service) syncOnce(ctx context.Context) {
+func (s *Service) syncOnce(ctx context.Context) error {
 	log, started := logAppServiceStart(ctx, "sync_once")
 	var opErr error
 	var count int
@@ -2949,14 +2972,14 @@ func (s *Service) syncOnce(ctx context.Context) {
 	s.emit(SyncChecking, "checking remote revision")
 
 	if s.deps.Remote == nil {
-		return
+		return nil
 	}
 
 	rev, err := s.deps.Remote.Revision(ctx)
 	if err != nil {
 		opErr = err
 		s.emit(SyncFailed, cerrors.ShortMessage(err))
-		return
+		return err
 	}
 
 	// Snapshot the outbox under lock.
@@ -2968,7 +2991,7 @@ func (s *Service) syncOnce(ctx context.Context) {
 	// If nothing to sync, return early.
 	if len(outboxSnapshot) == 0 && rev == "" {
 		s.emit(SyncUpdated, "already up to date")
-		return
+		return nil
 	}
 
 	// Fetch remote changes.
@@ -2976,7 +2999,7 @@ func (s *Service) syncOnce(ctx context.Context) {
 	if err != nil {
 		opErr = err
 		s.emit(SyncFailed, cerrors.ShortMessage(err))
-		return
+		return err
 	}
 	count = len(remoteItems) + len(remoteFolders) + len(outboxSnapshot)
 
@@ -2997,7 +3020,7 @@ func (s *Service) syncOnce(ctx context.Context) {
 	if ctx.Err() != nil {
 		opErr = ctx.Err()
 		s.mu.Unlock()
-		return
+		return opErr
 	}
 
 	// Detect conflicts.
@@ -3026,7 +3049,7 @@ func (s *Service) syncOnce(ctx context.Context) {
 		conflictCount := len(s.conflicts)
 		s.mu.Unlock()
 		s.emitCount(ConflictDetected, fmt.Sprintf("%d conflict(s) detected", conflictCount), conflictCount)
-		return
+		return nil
 	}
 
 	s.mu.Unlock()
@@ -3037,7 +3060,7 @@ func (s *Service) syncOnce(ctx context.Context) {
 			opErr = err
 			s.emit(SyncFailed, cerrors.ShortMessage(err))
 			// Do NOT clear outbox or install remote state on replay failure.
-			return
+			return err
 		}
 
 		// Re-fetch remote state after successful replay.
@@ -3046,7 +3069,7 @@ func (s *Service) syncOnce(ctx context.Context) {
 			opErr = err
 			s.emit(SyncFailed, cerrors.ShortMessage(err))
 			// Keep outbox intact.
-			return
+			return err
 		}
 		count = len(remoteItems) + len(remoteFolders) + len(outboxSnapshot)
 	}
@@ -3057,7 +3080,7 @@ func (s *Service) syncOnce(ctx context.Context) {
 
 	if ctx.Err() != nil {
 		opErr = ctx.Err()
-		return
+		return opErr
 	}
 
 	s.items = remoteItems
@@ -3075,6 +3098,7 @@ func (s *Service) syncOnce(ctx context.Context) {
 
 	// Persist cleared outbox.
 	s.saveCacheAsyncLocked(ctx)
+	return nil
 }
 
 // syncInterval returns the sync interval to use, falling back through

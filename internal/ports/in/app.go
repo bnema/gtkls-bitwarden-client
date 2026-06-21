@@ -46,6 +46,7 @@ type AppService interface {
 	Lock(ctx context.Context) error
 	SoftLock(ctx context.Context) error
 	SetBackgroundSyncSuspended(ctx context.Context, suspended bool) error
+	SyncNow(ctx context.Context) error
 	HardLock(ctx context.Context, email string) error
 	Search(ctx context.Context, query string, limit int) ([]vault.ScoredItem, error)
 	Items(ctx context.Context) ([]vault.Item, error)

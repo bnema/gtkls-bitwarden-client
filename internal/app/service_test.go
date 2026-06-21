@@ -685,6 +685,182 @@ func TestConflictDetailCacheOnlyFetchesRemoteSummary(t *testing.T) {
 	require.Equal(t, "Remote Sync", detail.RemoteItem.Name)
 }
 
+func TestSyncNowResidentInstallsRemoteItems(t *testing.T) {
+	remote := vault.Item{ID: "item-1", Name: "Remote Fresh", Type: vault.ItemTypeLogin}
+	fr := &fakeRemote{revisionRev: "rev-2", syncItems: []vault.Item{remote}, syncRev: "rev-2"}
+	svc := NewService(Deps{Remote: fr})
+	svc.mu.Lock()
+	svc.state = auth.LockStateUnlocked
+	svc.items = []vault.Item{{ID: "item-1", Name: "Stale", Type: vault.ItemTypeLogin}}
+	svc.mu.Unlock()
+
+	require.NoError(t, svc.SyncNow(context.Background()))
+
+	items, err := svc.Items(context.Background())
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.Equal(t, "Remote Fresh", items[0].Name)
+	require.Equal(t, int32(1), fr.syncCalled.Load())
+}
+
+func TestResolveConflictThenSyncNowRefreshesRemoteItems(t *testing.T) {
+	local := vault.Item{ID: "item-1", Name: "Local", Type: vault.ItemTypeLogin}
+	remoteAtConflict := vault.Item{ID: "item-1", Name: "Remote At Conflict", Type: vault.ItemTypeLogin, RevisionDate: time.Now()}
+	remoteAfterResolve := vault.Item{ID: "item-1", Name: "Remote After Resolve", Type: vault.ItemTypeLogin, RevisionDate: time.Now().Add(time.Minute)}
+	fr := &fakeRemote{revisionRev: "rev-2", syncItems: []vault.Item{remoteAtConflict}, syncRev: "rev-2"}
+	svc := NewService(Deps{Remote: fr})
+	svc.mu.Lock()
+	svc.state = auth.LockStateUnlocked
+	svc.items = []vault.Item{local}
+	svc.outbox = []coresync.OutboxMutation{{ID: "m1", Kind: coresync.MutationUpdate, ItemID: "item-1", Payload: []byte(`{"name":"Local"}`)}}
+	svc.mu.Unlock()
+	svc.syncOnce(context.Background())
+	conflicts := svc.conflictsForTest()
+	require.Len(t, conflicts, 1)
+
+	require.NoError(t, svc.ResolveConflict(context.Background(), conflicts[0].ID, coresync.ResolutionKeepRemote))
+	fr.mu.Lock()
+	fr.syncItems = []vault.Item{remoteAfterResolve}
+	fr.syncRev = "rev-3"
+	fr.mu.Unlock()
+
+	require.NoError(t, svc.SyncNow(context.Background()))
+
+	items, err := svc.Items(context.Background())
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.Equal(t, "Remote After Resolve", items[0].Name)
+}
+
+func TestResolveConflictKeepLocalThenSyncNowReplaysOutbox(t *testing.T) {
+	local := vault.Item{ID: "item-1", Name: "Local", Type: vault.ItemTypeLogin}
+	remoteAtConflict := vault.Item{ID: "item-1", Name: "Remote At Conflict", Type: vault.ItemTypeLogin, RevisionDate: time.Now()}
+	remoteAfterReplay := vault.Item{ID: "item-1", Name: "Local Replayed", Type: vault.ItemTypeLogin, RevisionDate: time.Now().Add(time.Minute)}
+	fr := &fakeRemote{revisionRev: "rev-2", syncItems: []vault.Item{remoteAtConflict}, syncRev: "rev-2"}
+	svc := NewService(Deps{Remote: fr})
+	svc.mu.Lock()
+	svc.state = auth.LockStateUnlocked
+	svc.items = []vault.Item{local}
+	svc.outbox = []coresync.OutboxMutation{{ID: "m1", Kind: coresync.MutationUpdate, ItemID: "item-1", BaseRevision: "old-rev", Payload: []byte(`{"id":"item-1","name":"Local","type":"login"}`)}}
+	svc.mu.Unlock()
+	svc.syncOnce(context.Background())
+	conflicts := svc.conflictsForTest()
+	require.Len(t, conflicts, 1)
+
+	require.NoError(t, svc.ResolveConflict(context.Background(), conflicts[0].ID, coresync.ResolutionKeepLocal))
+	var syncCalls int
+	fr.mu.Lock()
+	fr.onSync = func(context.Context) ([]vault.Item, []vault.Folder, string, error) {
+		syncCalls++
+		if syncCalls == 1 {
+			return []vault.Item{remoteAtConflict}, nil, "rev-2", nil
+		}
+		return []vault.Item{remoteAfterReplay}, nil, "rev-3", nil
+	}
+	fr.mu.Unlock()
+
+	require.NoError(t, svc.SyncNow(context.Background()))
+
+	items, err := svc.Items(context.Background())
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.Equal(t, "Local Replayed", items[0].Name)
+	require.Empty(t, svc.conflictsForTest())
+	require.Empty(t, svc.pendingMutationsForTest())
+}
+
+func TestResolveConflictKeepLocalThenSyncNowReplaysCacheOnlyOutbox(t *testing.T) {
+	cacheKey := []byte("test-cache-key-32-bytes-long!")
+	local := vault.Item{ID: "item-1", Name: "Local Cache", Type: vault.ItemTypeLogin}
+	remoteAtConflict := vault.Item{ID: "item-1", Name: "Remote At Conflict", Type: vault.ItemTypeLogin, RevisionDate: time.Now()}
+	remoteAfterReplay := vault.Item{ID: "item-1", Name: "Local Cache Replayed", Type: vault.ItemTypeLogin, RevisionDate: time.Now().Add(time.Minute)}
+	outbox := []coresync.OutboxMutation{{ID: "m1", Kind: coresync.MutationUpdate, ItemID: "item-1", BaseRevision: "old-rev", Payload: []byte(`{"id":"item-1","name":"Local Cache","type":"login"}`)}}
+	conflict := coresync.Conflict{ID: "c1", ItemID: "item-1", MutationID: "m1", Reason: coresync.ConflictBothModified}
+	snap := buildCacheSnapshotWithKeyAndOutboxAndConflicts(t, cacheKey, []vault.Item{local}, nil, outbox, []coresync.Conflict{conflict})
+	var syncCalls int
+	fr := &fakeRemote{revisionRev: "rev-2"}
+	fr.onSync = func(context.Context) ([]vault.Item, []vault.Folder, string, error) {
+		syncCalls++
+		if syncCalls <= 2 {
+			return []vault.Item{remoteAtConflict}, nil, "rev-2", nil
+		}
+		return []vault.Item{remoteAfterReplay}, nil, "rev-3", nil
+	}
+	svc := NewService(Deps{Remote: fr, Cache: &fakeCache{data: &snap}, SecretBox: &fakeSecretBox{}})
+	svc.mu.Lock()
+	svc.state = auth.LockStateUnlocked
+	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
+	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.conflicts = []coresync.Conflict{conflict}
+	svc.mu.Unlock()
+
+	require.NoError(t, svc.ResolveConflict(context.Background(), conflict.ID, coresync.ResolutionKeepLocal))
+	require.NoError(t, svc.SyncNow(context.Background()))
+
+	items, _, outboxAfter, err := svc.loadCachedVaultWithKey(context.Background(), cacheKey)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.Equal(t, "Local Cache Replayed", items[0].Name)
+	require.Empty(t, outboxAfter)
+	require.Empty(t, svc.conflictsForTest())
+}
+
+func TestSyncNowCacheOnlyUpdatesEncryptedCache(t *testing.T) {
+	cacheKey := []byte("test-cache-key-32-bytes-long!")
+	stale := vault.Item{ID: "item-1", Name: "Stale Cache", Type: vault.ItemTypeLogin}
+	remote := vault.Item{ID: "item-1", Name: "Remote Cache", Type: vault.ItemTypeLogin}
+	snap := buildCacheSnapshotWithKeyAndOutbox(t, cacheKey, []vault.Item{stale}, nil, nil)
+	svc := NewService(Deps{
+		Remote:    &fakeRemote{syncItems: []vault.Item{remote}, syncRev: "rev-2"},
+		Cache:     &fakeCache{data: &snap},
+		SecretBox: &fakeSecretBox{},
+	})
+	svc.mu.Lock()
+	svc.state = auth.LockStateUnlocked
+	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
+	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.mu.Unlock()
+
+	require.NoError(t, svc.SyncNow(context.Background()))
+
+	items, _, _, err := svc.loadCachedVaultWithKey(context.Background(), cacheKey)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.Equal(t, "Remote Cache", items[0].Name)
+}
+
+func TestSyncNowReturnsResidentSyncError(t *testing.T) {
+	syncErr := errors.New("remote sync failed")
+	svc := NewService(Deps{Remote: &fakeRemote{revisionRev: "rev-2", syncErr: syncErr}})
+	svc.mu.Lock()
+	svc.state = auth.LockStateUnlocked
+	svc.mu.Unlock()
+
+	err := svc.SyncNow(context.Background())
+
+	require.ErrorIs(t, err, syncErr)
+}
+
+func TestSyncNowReturnsCacheOnlySyncError(t *testing.T) {
+	cacheKey := []byte("test-cache-key-32-bytes-long!")
+	syncErr := errors.New("remote sync failed")
+	snap := buildCacheSnapshotWithKeyAndOutbox(t, cacheKey, []vault.Item{{ID: "item-1", Name: "Stale", Type: vault.ItemTypeLogin}}, nil, nil)
+	svc := NewService(Deps{
+		Remote:    &fakeRemote{syncErr: syncErr},
+		Cache:     &fakeCache{data: &snap},
+		SecretBox: &fakeSecretBox{},
+	})
+	svc.mu.Lock()
+	svc.state = auth.LockStateUnlocked
+	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
+	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.mu.Unlock()
+
+	err := svc.SyncNow(context.Background())
+
+	require.ErrorIs(t, err, syncErr)
+}
+
 func TestUnlockInstallsCacheIndexBeforeSync(t *testing.T) {
 	gitItem := vault.Item{
 		ID:   "item-1",
