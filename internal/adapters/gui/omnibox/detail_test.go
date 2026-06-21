@@ -1,8 +1,10 @@
 package omnibox
 
 import (
+	"strings"
 	"testing"
 
+	coresync "github.com/bnema/gtkls-bitwarden-client/internal/core/sync"
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
 	"github.com/stretchr/testify/require"
 )
@@ -132,11 +134,171 @@ func TestDetailFromItem_ConflictPendingDeleted(t *testing.T) {
 		Type:       vault.ItemTypeLogin,
 		Deleted:    true,
 		SyncStatus: vault.SyncStatusConflict,
+		ConflictID: "conflict-1",
 		Login:      &vault.Login{Username: "test"},
 	}
 
 	d := DetailFromItem(item)
 	require.True(t, d.Conflict)
+	require.Equal(t, "conflict-1", d.ConflictID)
 	require.True(t, d.Deleted)
 	require.False(t, d.Pending)
+}
+
+func TestConflictResolutionActions_OnlyForConflictedItemsWithConflictID(t *testing.T) {
+	require.Empty(t, ConflictResolutionActions(Detail{}))
+	require.Empty(t, ConflictResolutionActions(Detail{Conflict: true}))
+
+	actions := ConflictResolutionActions(Detail{Conflict: true, ConflictID: "conflict-1"})
+	require.Len(t, actions, 3)
+	require.Equal(t, "Keep local", actions[0].Label)
+	require.Equal(t, coresync.ResolutionKeepLocal, actions[0].Resolution)
+	require.Equal(t, "Use remote", actions[1].Label)
+	require.Equal(t, coresync.ResolutionKeepRemote, actions[1].Resolution)
+	require.Equal(t, "Duplicate local", actions[2].Label)
+	require.Equal(t, coresync.ResolutionDuplicateLocal, actions[2].Resolution)
+}
+
+func TestDetailFromConflictDetailShowsSafeLocalAndRemoteSummaries(t *testing.T) {
+	local := vault.Item{
+		ID:    "item-1",
+		Name:  "Local Site",
+		Type:  vault.ItemTypeLogin,
+		Notes: "local private notes",
+		Login: &vault.Login{
+			Username: "local-user",
+			Password: "local-password-secret",
+			TOTP:     "local-totp-secret",
+			URIs: []vault.URI{
+				{URI: "https://local.example/login?token=query-secret"},
+				{URI: "schemeless.example/users/alice@example.com?token=query-secret"},
+				{URI: "alice@example.com"},
+			},
+		},
+		Fields: []vault.Field{
+			{Name: "visible-field", Value: "visible-secret"},
+			{Name: "hidden-field", Value: "hidden-secret", Hidden: true},
+		},
+	}
+	remote := vault.Item{
+		ID:   "item-1",
+		Name: "Remote Site",
+		Type: vault.ItemTypeLogin,
+		Login: &vault.Login{
+			Username: "remote-user",
+			Password: "remote-password-secret",
+			TOTP:     "remote-totp-secret",
+			URIs:     []vault.URI{{URI: "https://remote.example/sign-in?secret=value"}},
+		},
+	}
+
+	d := DetailFromConflictDetail(coresync.ConflictDetail{
+		Conflict:   coresync.Conflict{ID: "conflict-1", ItemID: "item-1", Reason: coresync.ConflictBothModified},
+		LocalItem:  &local,
+		RemoteItem: &remote,
+	})
+
+	require.True(t, d.Conflict)
+	require.True(t, d.ConflictOnly)
+	require.Equal(t, "conflict-1", d.ConflictID)
+	require.Equal(t, "Local Site", d.Title)
+	require.Empty(t, d.URI, "conflict detail must not render raw item URI before safe summaries")
+	require.False(t, d.PasswordPresent, "conflict detail must not render secret presence outside safe summaries")
+	require.False(t, d.TOTPPresent, "conflict detail must not render secret presence outside safe summaries")
+	require.Len(t, d.ConflictSummaries, 2)
+
+	localText := conflictSummaryText(d.ConflictSummaries[0])
+	require.Contains(t, localText, "Name: Local Site")
+	require.Contains(t, localText, "Username: local-user")
+	require.Contains(t, localText, "URI: local.example, schemeless.example")
+	require.Contains(t, localText, "Password: stored (hidden)")
+	require.Contains(t, localText, "TOTP: stored (hidden)")
+	require.Contains(t, localText, "Notes: present (hidden)")
+	require.Contains(t, localText, "Visible custom fields: 1")
+	require.Contains(t, localText, "Hidden custom fields: 1")
+	require.NotContains(t, localText, "local-password-secret")
+	require.NotContains(t, localText, "local-totp-secret")
+	require.NotContains(t, localText, "query-secret")
+	require.NotContains(t, localText, "alice@example.com")
+	require.NotContains(t, localText, "visible-secret")
+	require.NotContains(t, localText, "visible-field")
+	require.NotContains(t, localText, "hidden-secret")
+	require.NotContains(t, localText, "hidden-field")
+
+	remoteText := conflictSummaryText(d.ConflictSummaries[1])
+	require.Contains(t, remoteText, "Name: Remote Site")
+	require.Contains(t, remoteText, "Username: remote-user")
+	require.Contains(t, remoteText, "URI: remote.example")
+	require.Contains(t, remoteText, "Password: stored (hidden)")
+	require.Contains(t, remoteText, "TOTP: stored (hidden)")
+	require.NotContains(t, remoteText, "remote-password-secret")
+	require.NotContains(t, remoteText, "remote-totp-secret")
+	require.NotContains(t, remoteText, "secret=value")
+}
+
+func TestConflictItemSummaryMatchesExistingCardAndIdentitySafePolicy(t *testing.T) {
+	card := vault.Item{ID: "card-1", Name: "Payment", Type: vault.ItemTypeCard, Card: &vault.Card{
+		CardholderName: "Sensitive Holder",
+		Brand:          "Visa",
+		Number:         "4111111111111111",
+		ExpMonth:       "12",
+		ExpYear:        "2030",
+		Code:           "123",
+	}}
+	identity := vault.Item{ID: "identity-1", Name: "Person", Type: vault.ItemTypeIdentity, Identity: &vault.Identity{
+		FirstName: "Alice",
+		LastName:  "Example",
+		Email:     "alice@example.com",
+		Username:  "alice-login",
+		Phone:     "555-1234",
+		Company:   "Secret Corp",
+		SSN:       "999-99-9999",
+	}}
+
+	cardText := conflictSummaryText(conflictItemSummary("Local", &card, false, ""))
+	require.Contains(t, cardText, "Brand: Visa")
+	require.Contains(t, cardText, "Number: •••• 1111")
+	require.Contains(t, cardText, "Security code: stored (hidden)")
+	require.NotContains(t, cardText, "Sensitive Holder")
+	require.NotContains(t, cardText, "12")
+	require.NotContains(t, cardText, "2030")
+	require.NotContains(t, cardText, "4111111111111111")
+	require.NotContains(t, cardText, "123")
+
+	identityText := conflictSummaryText(conflictItemSummary("Remote", &identity, false, ""))
+	require.Contains(t, identityText, "Identity name: Alice Example")
+	require.NotContains(t, identityText, "alice@example.com")
+	require.NotContains(t, identityText, "alice-login")
+	require.NotContains(t, identityText, "555-1234")
+	require.NotContains(t, identityText, "Secret Corp")
+	require.NotContains(t, identityText, "999-99-9999")
+}
+
+func TestDetailFromConflictDetailShowsMissingRemoteClearly(t *testing.T) {
+	local := vault.Item{ID: "item-1", Name: "Local Only", Type: vault.ItemTypeSecureNote, Notes: "secret note"}
+
+	d := DetailFromConflictDetail(coresync.ConflictDetail{
+		Conflict:      coresync.Conflict{ID: "conflict-1", ItemID: "item-1", Reason: coresync.ConflictRemoteDeleted},
+		LocalItem:     &local,
+		RemoteDeleted: true,
+	})
+
+	require.Len(t, d.ConflictSummaries, 2)
+	require.Equal(t, "Remote", d.ConflictSummaries[1].Label)
+	require.Equal(t, "Remote item was deleted", d.ConflictSummaries[1].MissingText)
+	require.NotContains(t, conflictSummaryText(d.ConflictSummaries[0]), "secret note")
+}
+
+func conflictSummaryText(summary ConflictItemSummary) string {
+	var b strings.Builder
+	b.WriteString(summary.Label)
+	b.WriteString("\n")
+	b.WriteString(summary.MissingText)
+	for _, field := range summary.Fields {
+		b.WriteString("\n")
+		b.WriteString(field.Label)
+		b.WriteString(": ")
+		b.WriteString(field.Value)
+	}
+	return b.String()
 }

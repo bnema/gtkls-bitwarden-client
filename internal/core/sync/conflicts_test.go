@@ -34,6 +34,16 @@ func TestDetectConflictsBothModified(t *testing.T) {
 	require.Equal(t, ConflictBothModified, conflicts[0].Reason)
 	require.Equal(t, "item-1", conflicts[0].ItemID)
 	require.Equal(t, "m1", conflicts[0].MutationID)
+	require.Equal(t, "rev2", conflicts[0].RemoteRevision)
+}
+
+func TestDetectConflictsMatchingBaseRevisionNoConflict(t *testing.T) {
+	local := []OutboxMutation{mkMutation("m1", "item-1", MutationUpdate)}
+	local[0].BaseRevision = "rev2"
+	remote := []RemoteChange{mkRemote("item-1", "rev2", false)}
+
+	conflicts := DetectConflicts(local, remote)
+	require.Empty(t, conflicts)
 }
 
 func TestDetectConflictsRemoteDeleted(t *testing.T) {

@@ -1,5 +1,7 @@
 package sync
 
+import "github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
+
 // ConflictReason describes why a conflict occurred.
 type ConflictReason string
 
@@ -20,10 +22,22 @@ const (
 
 // Conflict represents a sync conflict between a local mutation and a remote change.
 type Conflict struct {
-	ID         string
-	ItemID     string
-	MutationID string
-	Reason     ConflictReason
+	ID             string
+	ItemID         string
+	MutationID     string
+	Reason         ConflictReason
+	RemoteRevision string
+}
+
+// ConflictDetail contains the best available local and remote snapshots for a
+// conflict. Item pointers are optional because delete conflicts may have only
+// one side available.
+type ConflictDetail struct {
+	Conflict      Conflict
+	LocalItem     *vault.Item
+	RemoteItem    *vault.Item
+	LocalDeleted  bool
+	RemoteDeleted bool
 }
 
 // isLocalNonDelete returns true if the mutation is not a delete or trash.
@@ -53,27 +67,34 @@ func DetectConflicts(local []OutboxMutation, remote []RemoteChange) []Conflict {
 				continue // different items, no conflict
 			}
 
+			if l.BaseRevision != "" && r.Revision != "" && l.BaseRevision == r.Revision && !r.Deleted {
+				continue
+			}
+
 			switch {
 			case isLocalNonDelete(l.Kind) && !r.Deleted:
 				conflicts = append(conflicts, Conflict{
-					ID:         l.ID + "_" + r.ItemID,
-					ItemID:     l.ItemID,
-					MutationID: l.ID,
-					Reason:     ConflictBothModified,
+					ID:             l.ID + "_" + r.ItemID,
+					ItemID:         l.ItemID,
+					MutationID:     l.ID,
+					Reason:         ConflictBothModified,
+					RemoteRevision: r.Revision,
 				})
 			case isLocalNonDelete(l.Kind) && r.Deleted:
 				conflicts = append(conflicts, Conflict{
-					ID:         l.ID + "_" + r.ItemID,
-					ItemID:     l.ItemID,
-					MutationID: l.ID,
-					Reason:     ConflictRemoteDeleted,
+					ID:             l.ID + "_" + r.ItemID,
+					ItemID:         l.ItemID,
+					MutationID:     l.ID,
+					Reason:         ConflictRemoteDeleted,
+					RemoteRevision: r.Revision,
 				})
 			case isLocalDeleteOrTrash(l.Kind) && !r.Deleted:
 				conflicts = append(conflicts, Conflict{
-					ID:         l.ID + "_" + r.ItemID,
-					ItemID:     l.ItemID,
-					MutationID: l.ID,
-					Reason:     ConflictLocalDeletedRemoteModified,
+					ID:             l.ID + "_" + r.ItemID,
+					ItemID:         l.ItemID,
+					MutationID:     l.ID,
+					Reason:         ConflictLocalDeletedRemoteModified,
+					RemoteRevision: r.Revision,
 				})
 			}
 		}

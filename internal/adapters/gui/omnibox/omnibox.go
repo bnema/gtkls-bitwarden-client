@@ -40,14 +40,15 @@ const (
 // Row represents a safe display row for a vault item in the list.
 // No sensitive secrets are exposed.
 type Row struct {
-	ID       string
-	Title    string
-	Subtitle string
-	Badge    string
-	Type     string
-	Conflict bool
-	Pending  bool
-	Deleted  bool
+	ID         string
+	Title      string
+	Subtitle   string
+	Badge      string
+	Type       string
+	Conflict   bool
+	ConflictID string
+	Pending    bool
+	Deleted    bool
 }
 
 // State represents the full UI state of the omnibox.

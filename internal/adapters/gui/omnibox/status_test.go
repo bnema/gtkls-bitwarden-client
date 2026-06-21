@@ -61,6 +61,25 @@ func TestStatusFromEvent_ConflictDetected(t *testing.T) {
 	require.Equal(t, 2, st.ConflictCount)
 }
 
+func TestStatusAfterRowsLoadedPreservesConflictIndication(t *testing.T) {
+	current := StatusFromEvent(in.Event{Kind: in.ConflictDetected, Count: 2})
+
+	st := StatusAfterRowsLoaded(current, 7)
+
+	require.Equal(t, "Conflict detected", st.Text)
+	require.False(t, st.Syncing)
+	require.Equal(t, 2, st.ConflictCount)
+	require.Equal(t, 7, st.ItemCount)
+}
+
+func TestStatusAfterRowsLoadedUsesReadyWhenNoConflict(t *testing.T) {
+	st := StatusAfterRowsLoaded(Status{Text: "Search ready"}, 1)
+
+	require.Equal(t, "Vault ready — 1 item", st.Text)
+	require.Equal(t, 1, st.ItemCount)
+	require.Zero(t, st.ConflictCount)
+}
+
 func TestStatusFromEvent_CacheLoaded(t *testing.T) {
 	evt := in.Event{Kind: in.CacheLoaded}
 	st := StatusFromEvent(evt)
@@ -136,6 +155,7 @@ func TestEmptyRowsTextDoesNotEchoQuery(t *testing.T) {
 func TestShouldRefreshRowsOnEvent(t *testing.T) {
 	require.True(t, ShouldRefreshRowsOnEvent(in.IndexReady))
 	require.True(t, ShouldRefreshRowsOnEvent(in.SyncUpdated))
+	require.True(t, ShouldRefreshRowsOnEvent(in.ConflictDetected))
 	require.False(t, ShouldRefreshRowsOnEvent(in.SyncChecking))
 	require.False(t, ShouldRefreshRowsOnEvent(in.SyncFailed))
 }

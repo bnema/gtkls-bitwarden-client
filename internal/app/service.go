@@ -115,11 +115,15 @@ func NewService(deps Deps) *Service {
 // emit sends a non-blocking event to the events channel. Safe for concurrent
 // use and safe to call after Shutdown.
 func (s *Service) emit(kind EventKind, message string) {
+	s.emitCount(kind, message, 0)
+}
+
+func (s *Service) emitCount(kind EventKind, message string, count int) {
 	s.eventMu.RLock()
 	closed := s.eventsClosed
 	if !closed {
 		select {
-		case s.events <- Event{Kind: kind, Message: message}:
+		case s.events <- Event{Kind: kind, Message: message, Count: count}:
 		default:
 		}
 	}
@@ -1304,6 +1308,64 @@ func (s *Service) Items(ctx context.Context) ([]vault.Item, error) {
 	return result, nil
 }
 
+// Conflicts returns a copy of unresolved sync conflicts. It exposes only
+// conflict metadata needed to drive resolution UI, never vault item fields.
+func (s *Service) Conflicts(ctx context.Context) ([]coresync.Conflict, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state != auth.LockStateUnlocked {
+		return nil, cerrors.ErrLocked
+	}
+	result := make([]coresync.Conflict, len(s.conflicts))
+	copy(result, s.conflicts)
+	return result, nil
+}
+
+// ConflictDetail returns the best available local and remote snapshots for one
+// unresolved conflict. It returns copies so callers cannot mutate service state.
+func (s *Service) ConflictDetail(ctx context.Context, conflictID string) (coresync.ConflictDetail, error) {
+	s.mu.Lock()
+	if s.state != auth.LockStateUnlocked {
+		s.mu.Unlock()
+		return coresync.ConflictDetail{}, cerrors.ErrLocked
+	}
+	conflict, ok := findConflictByID(s.conflicts, conflictID)
+	if !ok {
+		s.mu.Unlock()
+		return coresync.ConflictDetail{}, cerrors.ErrNotFound
+	}
+	cacheOnly := s.backgroundSyncMode == backgroundSyncCacheOnly || (s.items == nil && s.folders == nil && s.outbox == nil && len(s.cacheKey) > 0)
+	key := append([]byte(nil), s.cacheKey...)
+	residentItems := cloneVaultItems(s.items)
+	residentOutbox := append([]coresync.OutboxMutation(nil), s.outbox...)
+	pendingRemoteItems := cloneVaultItems(s.pendingRemoteItems)
+	s.mu.Unlock()
+	defer clear(key)
+
+	localItems := residentItems
+	outbox := residentOutbox
+	remoteItems := pendingRemoteItems
+
+	if cacheOnly {
+		snap, err := s.loadDecryptedCacheSnapshot(ctx, key)
+		if err != nil {
+			return coresync.ConflictDetail{}, err
+		}
+		localItems = cloneVaultItems(snap.Items)
+		outbox = append([]coresync.OutboxMutation(nil), snap.Outbox...)
+		remoteItems = nil
+	}
+
+	if len(remoteItems) == 0 && conflict.Reason != coresync.ConflictRemoteDeleted && s.deps.Remote != nil {
+		items, _, _, err := s.deps.Remote.Sync(ctx)
+		if err == nil {
+			remoteItems = cloneVaultItems(items)
+		}
+	}
+
+	return conflictDetailFromSnapshots(conflict, localItems, remoteItems, outbox), nil
+}
+
 // Get returns a single vault item by ID. Resident unlocked state is
 // authoritative when present; cache-backed sessions fall back to the encrypted
 // cache when resident plaintext is intentionally absent. Returns ErrNotFound
@@ -1655,6 +1717,165 @@ func markVaultItemDeleted(items []vault.Item, id string, deleted bool) []vault.I
 		}
 	}
 	return out
+}
+
+func findConflictByID(conflicts []coresync.Conflict, id string) (coresync.Conflict, bool) {
+	for _, conflict := range conflicts {
+		if conflict.ID == id {
+			return conflict, true
+		}
+	}
+	return coresync.Conflict{}, false
+}
+
+func removeConflictsForItem(conflicts []coresync.Conflict, itemID string) []coresync.Conflict {
+	if len(conflicts) == 0 {
+		return conflicts
+	}
+	kept := make([]coresync.Conflict, 0, len(conflicts))
+	for _, conflict := range conflicts {
+		if conflict.ItemID != itemID {
+			kept = append(kept, conflict)
+		}
+	}
+	return kept
+}
+
+func replaceConflictsForItems(existing, detected []coresync.Conflict) []coresync.Conflict {
+	if len(detected) == 0 {
+		return existing
+	}
+	affectedItems := make(map[string]struct{}, len(detected))
+	for _, conflict := range detected {
+		affectedItems[conflict.ItemID] = struct{}{}
+	}
+	out := existing[:0]
+	for _, conflict := range existing {
+		if _, affected := affectedItems[conflict.ItemID]; !affected {
+			out = append(out, conflict)
+		}
+	}
+	seen := make(map[string]struct{}, len(detected))
+	for _, conflict := range detected {
+		if _, ok := seen[conflict.ID]; ok {
+			continue
+		}
+		seen[conflict.ID] = struct{}{}
+		out = append(out, conflict)
+	}
+	return out
+}
+
+func cloneVaultItems(items []vault.Item) []vault.Item {
+	if items == nil {
+		return nil
+	}
+	out := make([]vault.Item, len(items))
+	for i, item := range items {
+		out[i] = cloneVaultItem(item)
+	}
+	return out
+}
+
+func cloneVaultItem(item vault.Item) vault.Item {
+	clone := item
+	if item.Login != nil {
+		login := *item.Login
+		login.URIs = append([]vault.URI(nil), item.Login.URIs...)
+		clone.Login = &login
+	}
+	if item.SecureNote != nil {
+		secureNote := *item.SecureNote
+		clone.SecureNote = &secureNote
+	}
+	if item.Card != nil {
+		card := *item.Card
+		clone.Card = &card
+	}
+	if item.Identity != nil {
+		identity := *item.Identity
+		clone.Identity = &identity
+	}
+	clone.Fields = append([]vault.Field(nil), item.Fields...)
+	clone.Attachments = append([]vault.Attachment(nil), item.Attachments...)
+	return clone
+}
+
+func conflictDetailFromSnapshots(conflict coresync.Conflict, localItems, remoteItems []vault.Item, outbox []coresync.OutboxMutation) coresync.ConflictDetail {
+	detail := coresync.ConflictDetail{Conflict: conflict}
+	for _, item := range localItems {
+		if item.ID == conflict.ItemID {
+			local := cloneVaultItem(item)
+			detail.LocalItem = &local
+			break
+		}
+	}
+	for _, item := range remoteItems {
+		if item.ID == conflict.ItemID {
+			remote := cloneVaultItem(item)
+			remote.SyncStatus = vault.SyncStatusSynced
+			remote.ConflictID = ""
+			detail.RemoteItem = &remote
+			break
+		}
+	}
+	if detail.LocalItem == nil {
+		if item, ok := itemFromConflictMutation(conflict, outbox); ok {
+			detail.LocalItem = &item
+		}
+	}
+	mutationKind := conflictMutationKind(conflict, outbox)
+	detail.LocalDeleted = mutationKind == coresync.MutationDelete || mutationKind == coresync.MutationTrash
+	detail.RemoteDeleted = conflict.Reason == coresync.ConflictRemoteDeleted
+	return detail
+}
+
+func itemFromConflictMutation(conflict coresync.Conflict, outbox []coresync.OutboxMutation) (vault.Item, bool) {
+	for _, mutation := range outbox {
+		if mutation.ID != conflict.MutationID && mutation.ItemID != conflict.ItemID {
+			continue
+		}
+		if mutation.Kind != coresync.MutationCreate && mutation.Kind != coresync.MutationUpdate {
+			continue
+		}
+		var item vault.Item
+		if err := json.Unmarshal(mutation.Payload, &item); err != nil {
+			return vault.Item{}, false
+		}
+		if item.ID == "" {
+			item.ID = mutation.ItemID
+		}
+		item.SyncStatus = vault.SyncStatusConflict
+		item.ConflictID = conflict.ID
+		return cloneVaultItem(item), true
+	}
+	return vault.Item{}, false
+}
+
+func conflictMutationKind(conflict coresync.Conflict, outbox []coresync.OutboxMutation) coresync.MutationKind {
+	for _, mutation := range outbox {
+		if mutation.ID == conflict.MutationID || mutation.ItemID == conflict.ItemID {
+			return mutation.Kind
+		}
+	}
+	return ""
+}
+
+func revisionForItem(items []vault.Item, id string) string {
+	for _, item := range items {
+		if item.ID == id && !item.RevisionDate.IsZero() {
+			return item.RevisionDate.Format(time.RFC3339)
+		}
+	}
+	return ""
+}
+
+func setOutboxBaseRevisionForItem(outbox []coresync.OutboxMutation, itemID, revision string) {
+	for i := range outbox {
+		if outbox[i].ItemID == itemID {
+			outbox[i].BaseRevision = revision
+		}
+	}
 }
 
 func removeVaultItem(items []vault.Item, id string) []vault.Item {
@@ -2433,7 +2654,7 @@ func (s *Service) ResolveConflict(ctx context.Context, conflictID string, resolu
 		return cerrors.ErrNotFound
 	}
 	conflict := s.conflicts[idx]
-	s.conflicts = append(s.conflicts[:idx], s.conflicts[idx+1:]...)
+	s.conflicts = removeConflictsForItem(s.conflicts, conflict.ItemID)
 
 	switch resolution {
 	case coresync.ResolutionKeepRemote:
@@ -2473,6 +2694,13 @@ func (s *Service) ResolveConflict(ctx context.Context, conflictID string, resolu
 				s.items[i].ConflictID = ""
 				break
 			}
+		}
+		remoteRevision := conflict.RemoteRevision
+		if remoteRevision == "" {
+			remoteRevision = revisionForItem(s.pendingRemoteItems, conflict.ItemID)
+		}
+		if remoteRevision != "" {
+			setOutboxBaseRevisionForItem(s.outbox, conflict.ItemID, remoteRevision)
 		}
 
 	case coresync.ResolutionDuplicateLocal:
@@ -2534,7 +2762,12 @@ func (s *Service) ResolveConflict(ctx context.Context, conflictID string, resolu
 
 	s.rebuildIndexLocked()
 	s.saveCacheAsyncLocked(ctx)
-	s.emit(SyncUpdated, "conflict resolved")
+	remainingConflicts := len(s.conflicts)
+	if remainingConflicts > 0 {
+		s.emitCount(ConflictDetected, fmt.Sprintf("%d conflict(s) remaining", remainingConflicts), remainingConflicts)
+	} else {
+		s.emit(SyncUpdated, "conflict resolved")
+	}
 	return nil
 }
 
@@ -2560,12 +2793,7 @@ func (s *Service) resolveConflictCacheOnly(ctx context.Context, key []byte, conf
 		return cerrors.ErrNotFound
 	}
 	conflict := s.conflicts[idx]
-	remainingConflicts := make([]coresync.Conflict, 0, len(s.conflicts)-1)
-	for _, c := range s.conflicts {
-		if c.ID != conflictID {
-			remainingConflicts = append(remainingConflicts, c)
-		}
-	}
+	remainingConflicts := removeConflictsForItem(s.conflicts, conflict.ItemID)
 	expectedSeq := s.saveSeq
 	s.mu.Unlock()
 
@@ -2582,7 +2810,10 @@ func (s *Service) resolveConflictCacheOnly(ctx context.Context, key []byte, conf
 	snap.Conflicts = append([]coresync.Conflict(nil), remainingConflicts...)
 
 	var remoteItems []vault.Item
-	if resolution == coresync.ResolutionKeepRemote || resolution == coresync.ResolutionDuplicateLocal {
+	needsRemoteItems := resolution == coresync.ResolutionKeepRemote ||
+		resolution == coresync.ResolutionDuplicateLocal ||
+		(resolution == coresync.ResolutionKeepLocal && conflict.RemoteRevision == "")
+	if needsRemoteItems {
 		if s.deps.Remote == nil {
 			return fmt.Errorf("app: conflict resolve: remote unavailable")
 		}
@@ -2617,6 +2848,13 @@ func (s *Service) resolveConflictCacheOnly(ctx context.Context, key []byte, conf
 				snap.Items[i].ConflictID = ""
 				break
 			}
+		}
+		remoteRevision := conflict.RemoteRevision
+		if remoteRevision == "" {
+			remoteRevision = revisionForItem(remoteItems, conflict.ItemID)
+		}
+		if remoteRevision != "" {
+			setOutboxBaseRevisionForItem(snap.Outbox, conflict.ItemID, remoteRevision)
 		}
 
 	case coresync.ResolutionDuplicateLocal:
@@ -2681,17 +2919,8 @@ func (s *Service) resolveConflictCacheOnly(ctx context.Context, key []byte, conf
 	}
 
 	s.mu.Lock()
-	removed := false
-	for i, c := range s.conflicts {
-		if c.ID == conflictID {
-			s.conflicts = append(s.conflicts[:i], s.conflicts[i+1:]...)
-			removed = true
-			break
-		}
-	}
-	if !removed {
-		// Already absent: treat cache-only conflict cleanup as idempotent.
-	}
+	s.conflicts = removeConflictsForItem(s.conflicts, conflict.ItemID)
+	remainingConflictCount := len(s.conflicts)
 	s.pendingRemoteItems = nil
 	s.pendingRemoteFolders = nil
 	s.items = nil
@@ -2700,7 +2929,11 @@ func (s *Service) resolveConflictCacheOnly(ctx context.Context, key []byte, conf
 	s.index = nil
 	s.mu.Unlock()
 
-	s.emit(SyncUpdated, "conflict resolved")
+	if remainingConflictCount > 0 {
+		s.emitCount(ConflictDetected, fmt.Sprintf("%d conflict(s) remaining", remainingConflictCount), remainingConflictCount)
+	} else {
+		s.emit(SyncUpdated, "conflict resolved")
+	}
 	return nil
 }
 
@@ -2764,7 +2997,7 @@ func (s *Service) replayOutbox(ctx context.Context, outbox []coresync.OutboxMuta
 
 // syncOnce performs a single sync cycle: checks remote revision, pushes local
 // mutations, pulls remote changes, and detects conflicts.
-func (s *Service) syncOnce(ctx context.Context) {
+func (s *Service) syncOnce(ctx context.Context) error {
 	log, started := logAppServiceStart(ctx, "sync_once")
 	var opErr error
 	var count int
@@ -2773,14 +3006,14 @@ func (s *Service) syncOnce(ctx context.Context) {
 	s.emit(SyncChecking, "checking remote revision")
 
 	if s.deps.Remote == nil {
-		return
+		return nil
 	}
 
 	rev, err := s.deps.Remote.Revision(ctx)
 	if err != nil {
 		opErr = err
 		s.emit(SyncFailed, cerrors.ShortMessage(err))
-		return
+		return err
 	}
 
 	// Snapshot the outbox under lock.
@@ -2792,7 +3025,7 @@ func (s *Service) syncOnce(ctx context.Context) {
 	// If nothing to sync, return early.
 	if len(outboxSnapshot) == 0 && rev == "" {
 		s.emit(SyncUpdated, "already up to date")
-		return
+		return nil
 	}
 
 	// Fetch remote changes.
@@ -2800,7 +3033,7 @@ func (s *Service) syncOnce(ctx context.Context) {
 	if err != nil {
 		opErr = err
 		s.emit(SyncFailed, cerrors.ShortMessage(err))
-		return
+		return err
 	}
 	count = len(remoteItems) + len(remoteFolders) + len(outboxSnapshot)
 
@@ -2821,7 +3054,7 @@ func (s *Service) syncOnce(ctx context.Context) {
 	if ctx.Err() != nil {
 		opErr = ctx.Err()
 		s.mu.Unlock()
-		return
+		return opErr
 	}
 
 	// Detect conflicts.
@@ -2836,7 +3069,7 @@ func (s *Service) syncOnce(ctx context.Context) {
 		s.pendingRemoteFolders = make([]vault.Folder, len(remoteFolders))
 		copy(s.pendingRemoteFolders, remoteFolders)
 
-		s.conflicts = append(s.conflicts, conflicts...)
+		s.conflicts = replaceConflictsForItems(s.conflicts, conflicts)
 		for _, c := range conflicts {
 			for i, item := range s.items {
 				if item.ID == c.ItemID {
@@ -2847,9 +3080,10 @@ func (s *Service) syncOnce(ctx context.Context) {
 			}
 		}
 		s.rebuildIndexLocked()
+		conflictCount := len(s.conflicts)
 		s.mu.Unlock()
-		s.emit(ConflictDetected, fmt.Sprintf("%d conflict(s) detected", len(conflicts)))
-		return
+		s.emitCount(ConflictDetected, fmt.Sprintf("%d conflict(s) detected", conflictCount), conflictCount)
+		return nil
 	}
 
 	s.mu.Unlock()
@@ -2860,7 +3094,7 @@ func (s *Service) syncOnce(ctx context.Context) {
 			opErr = err
 			s.emit(SyncFailed, cerrors.ShortMessage(err))
 			// Do NOT clear outbox or install remote state on replay failure.
-			return
+			return err
 		}
 
 		// Re-fetch remote state after successful replay.
@@ -2869,7 +3103,7 @@ func (s *Service) syncOnce(ctx context.Context) {
 			opErr = err
 			s.emit(SyncFailed, cerrors.ShortMessage(err))
 			// Keep outbox intact.
-			return
+			return err
 		}
 		count = len(remoteItems) + len(remoteFolders) + len(outboxSnapshot)
 	}
@@ -2880,7 +3114,7 @@ func (s *Service) syncOnce(ctx context.Context) {
 
 	if ctx.Err() != nil {
 		opErr = ctx.Err()
-		return
+		return opErr
 	}
 
 	s.items = remoteItems
@@ -2898,6 +3132,7 @@ func (s *Service) syncOnce(ctx context.Context) {
 
 	// Persist cleared outbox.
 	s.saveCacheAsyncLocked(ctx)
+	return nil
 }
 
 // syncInterval returns the sync interval to use, falling back through

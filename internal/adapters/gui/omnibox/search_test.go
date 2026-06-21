@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/config"
+	coresync "github.com/bnema/gtkls-bitwarden-client/internal/core/sync"
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
 	"github.com/stretchr/testify/require"
 )
@@ -64,6 +65,15 @@ func TestSearchEnterActionForModifiers_CtrlOpensDetail(t *testing.T) {
 	require.Equal(t, ActionOpenDetail, action)
 }
 
+func TestSearchEnterActionForModifiers_ConflictPlaceholderOpensDetail(t *testing.T) {
+	cfg := config.Default()
+	cfg.Actions.DefaultPrimaryAction = config.ActionCopyPassword
+
+	action := SearchEnterActionForModifiers(Row{Conflict: true, ConflictID: "conflict-1"}, cfg, false, false)
+
+	require.Equal(t, ActionOpenDetail, action)
+}
+
 func TestSearchEnterActionForModifiers_CtrlWinsOverAlt(t *testing.T) {
 	action := SearchEnterActionForModifiers(Row{}, config.Default(), true, true)
 
@@ -105,6 +115,67 @@ func TestRowsFromItems_Nil(t *testing.T) {
 func TestRowsFromScored_Nil(t *testing.T) {
 	rows := RowsFromScored(nil)
 	require.Nil(t, rows)
+}
+
+func TestRowsWithConflictPlaceholders_AppendsSafeMissingConflictRows(t *testing.T) {
+	rows := RowsWithConflictPlaceholders(nil, []coresync.Conflict{{
+		ID:     "conflict-secret-id",
+		ItemID: "item-secret-id",
+		Reason: coresync.ConflictBothModified,
+	}})
+
+	require.Len(t, rows, 1)
+	require.Equal(t, "item-secret-id", rows[0].ID)
+	require.Equal(t, "conflict-secret-id", rows[0].ConflictID)
+	require.Equal(t, "Conflicted item", rows[0].Title)
+	require.Equal(t, "Local and remote changes both exist", rows[0].Subtitle)
+	require.Equal(t, "Conflict", rows[0].Badge)
+	require.True(t, rows[0].Conflict)
+	require.NotContains(t, rows[0].Title, "item-secret-id")
+	require.NotContains(t, rows[0].Subtitle, "item-secret-id")
+	require.NotContains(t, rows[0].Subtitle, "conflict-secret-id")
+}
+
+func TestRowsWithConflictPlaceholders_DoesNotDuplicateRepresentedItems(t *testing.T) {
+	rows := []Row{{ID: "item-1", Title: "Existing", Conflict: true, ConflictID: "conflict-1"}}
+
+	rows = RowsWithConflictPlaceholders(rows, []coresync.Conflict{{
+		ID:     "conflict-1",
+		ItemID: "item-1",
+		Reason: coresync.ConflictRemoteDeleted,
+	}})
+
+	require.Len(t, rows, 1)
+	require.Equal(t, "Existing", rows[0].Title)
+}
+
+func TestRowsWithConflictPlaceholders_MarksRepresentedConflictItems(t *testing.T) {
+	rows := []Row{{ID: "item-1", Title: "Existing"}}
+
+	rows = RowsWithConflictPlaceholders(rows, []coresync.Conflict{{
+		ID:     "conflict-1",
+		ItemID: "item-1",
+		Reason: coresync.ConflictBothModified,
+	}})
+
+	require.Len(t, rows, 1)
+	require.True(t, rows[0].Conflict)
+	require.Equal(t, "conflict-1", rows[0].ConflictID)
+	require.Equal(t, "Conflict", rows[0].Badge)
+}
+
+func TestRowsWithConflictPlaceholders_ReplacesStaleConflictIDForRepresentedItem(t *testing.T) {
+	rows := []Row{{ID: "item-1", Title: "Existing", Conflict: true, ConflictID: "old-conflict"}}
+
+	rows = RowsWithConflictPlaceholders(rows, []coresync.Conflict{{
+		ID:     "new-conflict",
+		ItemID: "item-1",
+		Reason: coresync.ConflictBothModified,
+	}})
+
+	require.Len(t, rows, 1)
+	require.True(t, rows[0].Conflict)
+	require.Equal(t, "new-conflict", rows[0].ConflictID)
 }
 
 func TestRowsFromItems_Login_ExcludesSecrets(t *testing.T) {
