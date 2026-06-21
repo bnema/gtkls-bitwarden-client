@@ -1728,6 +1728,44 @@ func findConflictByID(conflicts []coresync.Conflict, id string) (coresync.Confli
 	return coresync.Conflict{}, false
 }
 
+func removeConflictsForItem(conflicts []coresync.Conflict, itemID string) []coresync.Conflict {
+	if len(conflicts) == 0 {
+		return conflicts
+	}
+	kept := make([]coresync.Conflict, 0, len(conflicts))
+	for _, conflict := range conflicts {
+		if conflict.ItemID != itemID {
+			kept = append(kept, conflict)
+		}
+	}
+	return kept
+}
+
+func replaceConflictsForItems(existing, detected []coresync.Conflict) []coresync.Conflict {
+	if len(detected) == 0 {
+		return existing
+	}
+	affectedItems := make(map[string]struct{}, len(detected))
+	for _, conflict := range detected {
+		affectedItems[conflict.ItemID] = struct{}{}
+	}
+	out := existing[:0]
+	for _, conflict := range existing {
+		if _, affected := affectedItems[conflict.ItemID]; !affected {
+			out = append(out, conflict)
+		}
+	}
+	seen := make(map[string]struct{}, len(detected))
+	for _, conflict := range detected {
+		if _, ok := seen[conflict.ID]; ok {
+			continue
+		}
+		seen[conflict.ID] = struct{}{}
+		out = append(out, conflict)
+	}
+	return out
+}
+
 func cloneVaultItems(items []vault.Item) []vault.Item {
 	if items == nil {
 		return nil
@@ -2616,7 +2654,7 @@ func (s *Service) ResolveConflict(ctx context.Context, conflictID string, resolu
 		return cerrors.ErrNotFound
 	}
 	conflict := s.conflicts[idx]
-	s.conflicts = append(s.conflicts[:idx], s.conflicts[idx+1:]...)
+	s.conflicts = removeConflictsForItem(s.conflicts, conflict.ItemID)
 
 	switch resolution {
 	case coresync.ResolutionKeepRemote:
@@ -2657,7 +2695,11 @@ func (s *Service) ResolveConflict(ctx context.Context, conflictID string, resolu
 				break
 			}
 		}
-		if remoteRevision := revisionForItem(s.pendingRemoteItems, conflict.ItemID); remoteRevision != "" {
+		remoteRevision := conflict.RemoteRevision
+		if remoteRevision == "" {
+			remoteRevision = revisionForItem(s.pendingRemoteItems, conflict.ItemID)
+		}
+		if remoteRevision != "" {
 			setOutboxBaseRevisionForItem(s.outbox, conflict.ItemID, remoteRevision)
 		}
 
@@ -2751,12 +2793,7 @@ func (s *Service) resolveConflictCacheOnly(ctx context.Context, key []byte, conf
 		return cerrors.ErrNotFound
 	}
 	conflict := s.conflicts[idx]
-	remainingConflicts := make([]coresync.Conflict, 0, len(s.conflicts)-1)
-	for _, c := range s.conflicts {
-		if c.ID != conflictID {
-			remainingConflicts = append(remainingConflicts, c)
-		}
-	}
+	remainingConflicts := removeConflictsForItem(s.conflicts, conflict.ItemID)
 	expectedSeq := s.saveSeq
 	s.mu.Unlock()
 
@@ -2773,7 +2810,7 @@ func (s *Service) resolveConflictCacheOnly(ctx context.Context, key []byte, conf
 	snap.Conflicts = append([]coresync.Conflict(nil), remainingConflicts...)
 
 	var remoteItems []vault.Item
-	if resolution == coresync.ResolutionKeepRemote || resolution == coresync.ResolutionKeepLocal || resolution == coresync.ResolutionDuplicateLocal {
+	if resolution == coresync.ResolutionKeepRemote || resolution == coresync.ResolutionDuplicateLocal {
 		if s.deps.Remote == nil {
 			return fmt.Errorf("app: conflict resolve: remote unavailable")
 		}
@@ -2809,8 +2846,8 @@ func (s *Service) resolveConflictCacheOnly(ctx context.Context, key []byte, conf
 				break
 			}
 		}
-		if remoteRevision := revisionForItem(remoteItems, conflict.ItemID); remoteRevision != "" {
-			setOutboxBaseRevisionForItem(snap.Outbox, conflict.ItemID, remoteRevision)
+		if conflict.RemoteRevision != "" {
+			setOutboxBaseRevisionForItem(snap.Outbox, conflict.ItemID, conflict.RemoteRevision)
 		}
 
 	case coresync.ResolutionDuplicateLocal:
@@ -2875,17 +2912,7 @@ func (s *Service) resolveConflictCacheOnly(ctx context.Context, key []byte, conf
 	}
 
 	s.mu.Lock()
-	removed := false
-	for i, c := range s.conflicts {
-		if c.ID == conflictID {
-			s.conflicts = append(s.conflicts[:i], s.conflicts[i+1:]...)
-			removed = true
-			break
-		}
-	}
-	if !removed {
-		// Already absent: treat cache-only conflict cleanup as idempotent.
-	}
+	s.conflicts = removeConflictsForItem(s.conflicts, conflict.ItemID)
 	remainingConflictCount := len(s.conflicts)
 	s.pendingRemoteItems = nil
 	s.pendingRemoteFolders = nil
@@ -3035,7 +3062,7 @@ func (s *Service) syncOnce(ctx context.Context) error {
 		s.pendingRemoteFolders = make([]vault.Folder, len(remoteFolders))
 		copy(s.pendingRemoteFolders, remoteFolders)
 
-		s.conflicts = append(s.conflicts, conflicts...)
+		s.conflicts = replaceConflictsForItems(s.conflicts, conflicts)
 		for _, c := range conflicts {
 			for i, item := range s.items {
 				if item.ID == c.ItemID {

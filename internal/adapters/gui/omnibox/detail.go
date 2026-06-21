@@ -1,6 +1,7 @@
 package omnibox
 
 import (
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -139,7 +140,7 @@ func conflictItemSummary(label string, item *vault.Item, deleted bool, missingTe
 			if len(item.Login.URIs) > 0 {
 				uris := make([]string, 0, len(item.Login.URIs))
 				for _, uri := range item.Login.URIs {
-					if safeURI := display.SafeURI(uri.URI); safeURI != "" {
+					if safeURI := conflictURIHost(uri.URI); safeURI != "" {
 						uris = append(uris, safeURI)
 					}
 				}
@@ -154,15 +155,11 @@ func conflictItemSummary(label string, item *vault.Item, deleted bool, missingTe
 		}
 	case vault.ItemTypeCard:
 		if item.Card != nil {
-			addField("Cardholder", item.Card.CardholderName)
 			addField("Brand", item.Card.Brand)
 			if last4 := display.SafeLast4(item.Card.Number); last4 != "" {
 				addField("Number", "•••• "+last4)
 			} else if item.Card.Number != "" {
 				addField("Number", "stored (hidden)")
-			}
-			if item.Card.ExpMonth != "" || item.Card.ExpYear != "" {
-				addField("Expires", strings.Trim(strings.Join([]string{item.Card.ExpMonth, item.Card.ExpYear}, "/"), "/"))
 			}
 			if item.Card.Code != "" {
 				addField("Security code", "stored (hidden)")
@@ -171,25 +168,21 @@ func conflictItemSummary(label string, item *vault.Item, deleted bool, missingTe
 	case vault.ItemTypeIdentity:
 		if item.Identity != nil {
 			addField("Identity name", display.BuildIdentityName(item.Identity))
-			addField("Email", item.Identity.Email)
-			addField("Username", item.Identity.Username)
-			addField("Phone", item.Identity.Phone)
-			addField("Company", item.Identity.Company)
 		}
 	}
 
-	visibleFieldNames := make([]string, 0, len(item.Fields))
+	visibleCount := 0
 	hiddenCount := 0
 	for _, field := range item.Fields {
 		if field.Hidden {
 			hiddenCount++
 			continue
 		}
-		if field.Name != "" {
-			visibleFieldNames = append(visibleFieldNames, field.Name)
-		}
+		visibleCount++
 	}
-	addField("Visible custom fields", strings.Join(visibleFieldNames, ", "))
+	if visibleCount > 0 {
+		addField("Visible custom fields", strconv.Itoa(visibleCount))
+	}
 	if hiddenCount > 0 {
 		addField("Hidden custom fields", strconv.Itoa(hiddenCount))
 	}
@@ -202,6 +195,33 @@ func conflictItemSummary(label string, item *vault.Item, deleted bool, missingTe
 	}
 	addField("Attachments", strings.Join(attachmentNames, ", "))
 	return summary
+}
+
+func conflictURIHost(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		head := raw
+		if idx := strings.IndexAny(head, "/\\"); idx >= 0 {
+			head = head[:idx]
+		}
+		if strings.Contains(head, "@") {
+			return ""
+		}
+	}
+	parseHost := func(candidate string) string {
+		u, err := url.Parse(candidate)
+		if err != nil {
+			return ""
+		}
+		return u.Hostname()
+	}
+	if host := parseHost(raw); host != "" {
+		return host
+	}
+	return parseHost("//" + raw)
 }
 
 func missingLocalConflictText(reason coresync.ConflictReason) string {

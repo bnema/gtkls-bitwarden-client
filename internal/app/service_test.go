@@ -775,13 +775,13 @@ func TestResolveConflictKeepLocalThenSyncNowReplaysCacheOnlyOutbox(t *testing.T)
 	remoteAtConflict := vault.Item{ID: "item-1", Name: "Remote At Conflict", Type: vault.ItemTypeLogin, RevisionDate: time.Now()}
 	remoteAfterReplay := vault.Item{ID: "item-1", Name: "Local Cache Replayed", Type: vault.ItemTypeLogin, RevisionDate: time.Now().Add(time.Minute)}
 	outbox := []coresync.OutboxMutation{{ID: "m1", Kind: coresync.MutationUpdate, ItemID: "item-1", BaseRevision: "old-rev", Payload: []byte(`{"id":"item-1","name":"Local Cache","type":"login"}`)}}
-	conflict := coresync.Conflict{ID: "c1", ItemID: "item-1", MutationID: "m1", Reason: coresync.ConflictBothModified}
+	conflict := coresync.Conflict{ID: "c1", ItemID: "item-1", MutationID: "m1", Reason: coresync.ConflictBothModified, RemoteRevision: remoteAtConflict.RevisionDate.Format(time.RFC3339)}
 	snap := buildCacheSnapshotWithKeyAndOutboxAndConflicts(t, cacheKey, []vault.Item{local}, nil, outbox, []coresync.Conflict{conflict})
 	var syncCalls int
 	fr := &fakeRemote{revisionRev: "rev-2"}
 	fr.onSync = func(context.Context) ([]vault.Item, []vault.Folder, string, error) {
 		syncCalls++
-		if syncCalls <= 2 {
+		if syncCalls == 1 {
 			return []vault.Item{remoteAtConflict}, nil, "rev-2", nil
 		}
 		return []vault.Item{remoteAfterReplay}, nil, "rev-3", nil
@@ -1760,6 +1760,27 @@ func TestResolveConflictEmitsRemainingConflictCount(t *testing.T) {
 	}
 	require.Equal(t, ConflictDetected, conflictEvent.Kind)
 	require.Equal(t, 1, conflictEvent.Count)
+}
+
+func TestResolveConflictRemovesAllSameItemConflicts(t *testing.T) {
+	svc := NewService(Deps{})
+	svc.mu.Lock()
+	svc.state = auth.LockStateUnlocked
+	svc.items = []vault.Item{{ID: "item-1", Name: "One", Type: vault.ItemTypeLogin, SyncStatus: vault.SyncStatusConflict, ConflictID: "c1"}}
+	svc.outbox = []coresync.OutboxMutation{
+		{ID: "m1", Kind: coresync.MutationUpdate, ItemID: "item-1"},
+		{ID: "m2", Kind: coresync.MutationUpdate, ItemID: "item-1"},
+	}
+	svc.conflicts = []coresync.Conflict{
+		{ID: "c1", ItemID: "item-1", MutationID: "m1", Reason: coresync.ConflictBothModified},
+		{ID: "c2", ItemID: "item-1", MutationID: "m2", Reason: coresync.ConflictBothModified},
+	}
+	svc.mu.Unlock()
+
+	err := svc.ResolveConflict(context.Background(), "c1", coresync.ResolutionKeepRemote)
+	require.NoError(t, err)
+
+	require.Empty(t, svc.conflictsForTest())
 }
 
 func TestResolveConflictKeepRemoteInCacheOnlySessionUpdatesEncryptedCache(t *testing.T) {

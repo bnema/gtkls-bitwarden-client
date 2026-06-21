@@ -169,7 +169,11 @@ func TestDetailFromConflictDetailShowsSafeLocalAndRemoteSummaries(t *testing.T) 
 			Username: "local-user",
 			Password: "local-password-secret",
 			TOTP:     "local-totp-secret",
-			URIs:     []vault.URI{{URI: "https://local.example/login?token=query-secret"}},
+			URIs: []vault.URI{
+				{URI: "https://local.example/login?token=query-secret"},
+				{URI: "schemeless.example/users/alice@example.com?token=query-secret"},
+				{URI: "alice@example.com"},
+			},
 		},
 		Fields: []vault.Field{
 			{Name: "visible-field", Value: "visible-secret"},
@@ -206,17 +210,20 @@ func TestDetailFromConflictDetailShowsSafeLocalAndRemoteSummaries(t *testing.T) 
 	localText := conflictSummaryText(d.ConflictSummaries[0])
 	require.Contains(t, localText, "Name: Local Site")
 	require.Contains(t, localText, "Username: local-user")
-	require.Contains(t, localText, "URI: local.example")
+	require.Contains(t, localText, "URI: local.example, schemeless.example")
 	require.Contains(t, localText, "Password: stored (hidden)")
 	require.Contains(t, localText, "TOTP: stored (hidden)")
 	require.Contains(t, localText, "Notes: present (hidden)")
-	require.Contains(t, localText, "Visible custom fields: visible-field")
+	require.Contains(t, localText, "Visible custom fields: 1")
 	require.Contains(t, localText, "Hidden custom fields: 1")
 	require.NotContains(t, localText, "local-password-secret")
 	require.NotContains(t, localText, "local-totp-secret")
 	require.NotContains(t, localText, "query-secret")
+	require.NotContains(t, localText, "alice@example.com")
 	require.NotContains(t, localText, "visible-secret")
+	require.NotContains(t, localText, "visible-field")
 	require.NotContains(t, localText, "hidden-secret")
+	require.NotContains(t, localText, "hidden-field")
 
 	remoteText := conflictSummaryText(d.ConflictSummaries[1])
 	require.Contains(t, remoteText, "Name: Remote Site")
@@ -227,6 +234,44 @@ func TestDetailFromConflictDetailShowsSafeLocalAndRemoteSummaries(t *testing.T) 
 	require.NotContains(t, remoteText, "remote-password-secret")
 	require.NotContains(t, remoteText, "remote-totp-secret")
 	require.NotContains(t, remoteText, "secret=value")
+}
+
+func TestConflictItemSummaryMatchesExistingCardAndIdentitySafePolicy(t *testing.T) {
+	card := vault.Item{ID: "card-1", Name: "Payment", Type: vault.ItemTypeCard, Card: &vault.Card{
+		CardholderName: "Sensitive Holder",
+		Brand:          "Visa",
+		Number:         "4111111111111111",
+		ExpMonth:       "12",
+		ExpYear:        "2030",
+		Code:           "123",
+	}}
+	identity := vault.Item{ID: "identity-1", Name: "Person", Type: vault.ItemTypeIdentity, Identity: &vault.Identity{
+		FirstName: "Alice",
+		LastName:  "Example",
+		Email:     "alice@example.com",
+		Username:  "alice-login",
+		Phone:     "555-1234",
+		Company:   "Secret Corp",
+		SSN:       "999-99-9999",
+	}}
+
+	cardText := conflictSummaryText(conflictItemSummary("Local", &card, false, ""))
+	require.Contains(t, cardText, "Brand: Visa")
+	require.Contains(t, cardText, "Number: •••• 1111")
+	require.Contains(t, cardText, "Security code: stored (hidden)")
+	require.NotContains(t, cardText, "Sensitive Holder")
+	require.NotContains(t, cardText, "12")
+	require.NotContains(t, cardText, "2030")
+	require.NotContains(t, cardText, "4111111111111111")
+	require.NotContains(t, cardText, "123")
+
+	identityText := conflictSummaryText(conflictItemSummary("Remote", &identity, false, ""))
+	require.Contains(t, identityText, "Identity name: Alice Example")
+	require.NotContains(t, identityText, "alice@example.com")
+	require.NotContains(t, identityText, "alice-login")
+	require.NotContains(t, identityText, "555-1234")
+	require.NotContains(t, identityText, "Secret Corp")
+	require.NotContains(t, identityText, "999-99-9999")
 }
 
 func TestDetailFromConflictDetailShowsMissingRemoteClearly(t *testing.T) {
