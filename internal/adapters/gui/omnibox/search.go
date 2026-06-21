@@ -74,9 +74,7 @@ func RowsWithConflictPlaceholders(rows []Row, conflicts []coresync.Conflict) []R
 
 func markRowConflict(row Row, conflict coresync.Conflict) Row {
 	row.Conflict = true
-	if row.ConflictID == "" {
-		row.ConflictID = conflict.ID
-	}
+	row.ConflictID = conflict.ID
 	if !strings.Contains(row.Badge, "Conflict") {
 		if row.Badge == "" {
 			row.Badge = "Conflict"

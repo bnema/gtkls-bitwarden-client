@@ -164,6 +164,20 @@ func TestRowsWithConflictPlaceholders_MarksRepresentedConflictItems(t *testing.T
 	require.Equal(t, "Conflict", rows[0].Badge)
 }
 
+func TestRowsWithConflictPlaceholders_ReplacesStaleConflictIDForRepresentedItem(t *testing.T) {
+	rows := []Row{{ID: "item-1", Title: "Existing", Conflict: true, ConflictID: "old-conflict"}}
+
+	rows = RowsWithConflictPlaceholders(rows, []coresync.Conflict{{
+		ID:     "new-conflict",
+		ItemID: "item-1",
+		Reason: coresync.ConflictBothModified,
+	}})
+
+	require.Len(t, rows, 1)
+	require.True(t, rows[0].Conflict)
+	require.Equal(t, "new-conflict", rows[0].ConflictID)
+}
+
 func TestRowsFromItems_Login_ExcludesSecrets(t *testing.T) {
 	items := []vault.Item{
 		{
