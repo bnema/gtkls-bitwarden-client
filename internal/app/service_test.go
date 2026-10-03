@@ -686,7 +686,7 @@ func TestResolveConflictThenSyncNowRefreshesRemoteItems(t *testing.T) {
 	svc.items = []vault.Item{local}
 	svc.outbox = []coresync.OutboxMutation{{ID: "m1", Kind: coresync.MutationUpdate, ItemID: "item-1", Payload: []byte(`{"name":"Local"}`)}}
 	svc.mu.Unlock()
-	svc.syncOnce(context.Background())
+	require.NoError(t, svc.syncOnce(context.Background()))
 	conflicts := svc.conflictsForTest()
 	require.Len(t, conflicts, 1)
 
@@ -715,7 +715,7 @@ func TestResolveConflictKeepLocalThenSyncNowReplaysOutbox(t *testing.T) {
 	svc.items = []vault.Item{local}
 	svc.outbox = []coresync.OutboxMutation{{ID: "m1", Kind: coresync.MutationUpdate, ItemID: "item-1", BaseRevision: "old-rev", Payload: []byte(`{"id":"item-1","name":"Local","type":"login"}`)}}
 	svc.mu.Unlock()
-	svc.syncOnce(context.Background())
+	require.NoError(t, svc.syncOnce(context.Background()))
 	conflicts := svc.conflictsForTest()
 	require.Len(t, conflicts, 1)
 
@@ -1099,7 +1099,7 @@ func TestSyncConflictMarksItem(t *testing.T) {
 	svc.mu.Unlock()
 
 	// Run sync.
-	svc.syncOnce(context.Background())
+	require.NoError(t, svc.syncOnce(context.Background()))
 
 	// Check item is marked as conflict.
 	svc.mu.Lock()
@@ -1135,7 +1135,7 @@ func TestSyncConflictDetectedEventIncludesCount(t *testing.T) {
 	}
 	svc.mu.Unlock()
 
-	svc.syncOnce(context.Background())
+	require.NoError(t, svc.syncOnce(context.Background()))
 
 	events := consumeEvents(t, svc.events, 50*time.Millisecond)
 	var conflictEvent Event
@@ -1295,7 +1295,7 @@ func TestLockCancelsSyncInstall(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		svc.syncOnce(ctx)
+		_ = svc.syncOnce(ctx)
 	})
 
 	// Wait for syncOnce to reach Remote.Sync (which blocks on syncBlockCh).
@@ -1562,7 +1562,7 @@ func TestSyncReplaysOutboxBeforeClearing(t *testing.T) {
 	svc.rebuildIndexLocked()
 	svc.mu.Unlock()
 
-	svc.syncOnce(context.Background())
+	require.NoError(t, svc.syncOnce(context.Background()))
 
 	// Verify Create was called on remote.
 	select {
@@ -1617,7 +1617,7 @@ func TestSyncPreservesConcurrentOutboxMutations(t *testing.T) {
 	svc.rebuildIndexLocked()
 	svc.mu.Unlock()
 
-	svc.syncOnce(context.Background())
+	require.NoError(t, svc.syncOnce(context.Background()))
 
 	pending := svc.pendingMutationsForTest()
 	require.Len(t, pending, 1, "concurrent mutation should be preserved")
@@ -1650,7 +1650,7 @@ func TestSyncKeepsOutboxWhenReplayFails(t *testing.T) {
 	svc.rebuildIndexLocked()
 	svc.mu.Unlock()
 
-	svc.syncOnce(context.Background())
+	require.Error(t, svc.syncOnce(context.Background()))
 
 	// Verify outbox is still intact after replay failure.
 	pending := svc.pendingMutationsForTest()
@@ -1695,7 +1695,7 @@ func TestResolveConflictDuplicateLocalQueuesCreate(t *testing.T) {
 	svc.mu.Unlock()
 
 	// Run sync to trigger conflict detection.
-	svc.syncOnce(context.Background())
+	require.NoError(t, svc.syncOnce(context.Background()))
 
 	// Verify conflict was detected.
 	conflicts := svc.conflictsForTest()
