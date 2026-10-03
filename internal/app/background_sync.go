@@ -4,11 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/auth"
-	"github.com/bnema/gtkls-bitwarden-client/internal/core/cache"
 	cerrors "github.com/bnema/gtkls-bitwarden-client/internal/core/errors"
 	coresync "github.com/bnema/gtkls-bitwarden-client/internal/core/sync"
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
@@ -21,14 +19,6 @@ const (
 	backgroundSyncResident
 	backgroundSyncCacheOnly
 )
-
-type decryptedCacheSnapshot struct {
-	Salt      []byte
-	Items     []vault.Item
-	Folders   []vault.Folder
-	Outbox    []coresync.OutboxMutation
-	Conflicts []coresync.Conflict
-}
 
 func (s *Service) SetBackgroundSyncSuspended(ctx context.Context, suspended bool) error {
 	s.mu.Lock()
@@ -86,46 +76,6 @@ func (s *Service) startBackgroundSyncWorker(ctx context.Context, mode background
 	}()
 }
 
-func (s *Service) loadDecryptedCacheSnapshot(ctx context.Context, key []byte) (decryptedCacheSnapshot, error) {
-	var snap decryptedCacheSnapshot
-
-	if s.deps.Cache == nil || s.deps.SecretBox == nil || len(key) == 0 {
-		return snap, nil
-	}
-
-	cached, err := s.deps.Cache.Load(ctx)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return snap, nil
-		}
-		return snap, fmt.Errorf("cache load: %w", err)
-	}
-
-	if cached.Version == 0 && cached.AccountHash == "" && len(cached.VaultCiphertext) == 0 {
-		return snap, nil
-	}
-
-	if err := cache.ValidateSnapshot(cached); err != nil {
-		return snap, fmt.Errorf("cache validation: %w", err)
-	}
-
-	items, folders, outbox, err := s.loadCachedVaultWithKey(ctx, key)
-	if err != nil {
-		return snap, err
-	}
-	conflicts, err := s.loadCachedConflictsWithKey(ctx, key)
-	if err != nil {
-		return snap, err
-	}
-
-	snap.Salt = append([]byte(nil), cached.CacheKeySalt...)
-	snap.Items = append([]vault.Item(nil), items...)
-	snap.Folders = append([]vault.Folder(nil), folders...)
-	snap.Outbox = append([]coresync.OutboxMutation(nil), outbox...)
-	snap.Conflicts = append([]coresync.Conflict(nil), conflicts...)
-	return snap, nil
-}
-
 func (s *Service) saveExplicitCacheSnapshot(ctx context.Context, key []byte, snap decryptedCacheSnapshot, expectedSeq uint64) error {
 	if len(key) == 0 {
 		return nil
@@ -149,25 +99,15 @@ func (s *Service) saveExplicitCacheSnapshot(ctx context.Context, key []byte, sna
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 
-	salt := append([]byte(nil), snap.Salt...)
-	if len(salt) == 0 {
-		existing, err := s.deps.Cache.Load(cleanupCtx)
-		if err == nil && len(existing.CacheKeySalt) > 0 {
-			salt = append([]byte(nil), existing.CacheKeySalt...)
+	vc := s.vaultCache()
+	if err := vc.Save(cleanupCtx, key, accountHash, snap); err != nil {
+		if errors.Is(err, errNoCacheSalt) {
+			return fmt.Errorf("save cache: %w", err)
 		}
-	}
-	if len(salt) == 0 {
-		return fmt.Errorf("save cache: no cache salt available")
-	}
-
-	if err := saveEncryptedSnapshot(cleanupCtx, s.deps.Cache, s.deps.SecretBox, key, salt, accountHash, snap.Items, snap.Folders, snap.Outbox, snap.Conflicts); err != nil {
 		return err
 	}
-
-	if s.deps.Outbox != nil {
-		if err := s.deps.Outbox.Save(cleanupCtx, key, snap.Outbox); err != nil {
-			return fmt.Errorf("save outbox: %w", err)
-		}
+	if err := vc.SaveOutbox(cleanupCtx, key, snap.Outbox); err != nil {
+		return fmt.Errorf("save outbox: %w", err)
 	}
 
 	return nil
@@ -217,7 +157,7 @@ func (s *Service) syncOnceCacheOnly(ctx context.Context) error {
 		return nil
 	}
 
-	snap, err := s.loadDecryptedCacheSnapshot(ctx, key)
+	snap, err := s.vaultCache().Open(ctx, key)
 	if err != nil {
 		s.emit(SyncFailed, cerrors.ShortMessage(err))
 		return err
