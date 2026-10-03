@@ -18,8 +18,6 @@ import (
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/auth"
 	safelog "github.com/bnema/gtkls-bitwarden-client/internal/core/logging"
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/session"
-	coresync "github.com/bnema/gtkls-bitwarden-client/internal/core/sync"
-	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
 	"github.com/bnema/gtkls-bitwarden-client/internal/ports/in"
 	"github.com/bnema/gtkls-bitwarden-client/internal/ports/out"
 	"github.com/bnema/zerowrap"
@@ -32,9 +30,11 @@ type View struct {
 
 	service in.AppService
 	ctx     context.Context
-	state   State
-	quit    func()
-	retain  func(interface{})
+	// ctrl owns all orchestration state; guarded by mu. The view calls it
+	// and performs the effects it returns (see perform).
+	ctrl   *Controller
+	quit   func()
+	retain func(interface{})
 
 	// Widgets
 	unlockBox            *gtklib.Box
@@ -60,19 +60,15 @@ type View struct {
 	generatorNumberCheck *gtklib.CheckButton
 	generatorSymbolCheck *gtklib.CheckButton
 	generatorOutput      *gtklib.Entry
-	formInitialFocus     *gtklib.Entry
-	formSubmit           func()
 	statusLabel          *gtklib.Label
 	statusBox            *gtklib.Box
 
 	mu              sync.Mutex
-	currentItem     vault.Item
-	activeCategory  itemCategory
 	searchTimer     *time.Timer
 	syncStatusTimer *time.Timer
-	statusVersion   uint64
-	searchLock      sync.Mutex
 	clipboard       out.Clipboard
+	// formUI maps the open form session to its widgets. Main thread only.
+	formUI *formWidgets
 
 	// tempMasterPassword and tempPIN hold sensitive values during
 	// ModePINSetup / ModePINConfirm (PIN enrollment). They are cleared
@@ -182,42 +178,18 @@ func (v *View) setBackgroundSyncSuspended(suspended bool) {
 }
 
 func (v *View) setMode(mode Mode) {
-	v.mu.Lock()
-	v.state.Mode = mode
-	v.mu.Unlock()
-	v.setBackgroundSyncSuspended(syncSuspendedForMode(mode))
-}
-
-func (v *View) backMode() Mode {
-	v.state.Back()
-	return v.state.Mode
-}
-
-func (v *View) openDetailSelected() (Row, bool) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-
-	row, ok := v.state.SelectedRow()
-	if !ok {
-		return Row{}, false
-	}
-	v.state.OpenDetail()
-	if v.state.Mode != ModeDetail || v.state.DetailID == "" {
-		return Row{}, false
-	}
-	return row, true
+	v.run(func(c *Controller) []Effect { return c.SetMode(mode) })
 }
 
 // New creates a new View, builds all GTK widgets, queries auth status to choose
 // the initial mode, and starts the event listener.
 func New(ctx context.Context, service in.AppService, quit func(), retainFn func(interface{})) *View {
 	v := &View{
-		service:        service,
-		ctx:            ctx,
-		state:          NewState(),
-		quit:           quit,
-		retain:         retainFn,
-		activeCategory: categoryAll,
+		service: service,
+		ctx:     ctx,
+		ctrl:    NewController(),
+		quit:    quit,
+		retain:  retainFn,
 	}
 
 	v.buildUI()
@@ -242,7 +214,7 @@ func New(ctx context.Context, service in.AppService, quit func(), retainFn func(
 
 		mode := ModeForAuthStatusDetail(detail, true)
 		v.mu.Lock()
-		v.state.Mode = mode
+		v.ctrl.State.Mode = mode
 		v.mu.Unlock()
 
 		switch {
@@ -267,7 +239,7 @@ func New(ctx context.Context, service in.AppService, quit func(), retainFn func(
 		}
 	}
 
-	v.renderUnlockModeWidgets(v.state.Mode)
+	v.renderUnlockModeWidgets(v.ctrl.State.Mode)
 
 	// Subscribe to service events.
 	go v.eventLoop(ctx)
@@ -310,7 +282,7 @@ func (v *View) buildUI() {
 	// Unlock action on password/PIN Enter — behaviour depends on current mode.
 	activateCb := func(_ gtklib.Entry) {
 		v.mu.Lock()
-		mode := v.state.Mode
+		mode := v.ctrl.State.Mode
 		v.mu.Unlock()
 		switch mode {
 		case ModeUnlock:
@@ -397,7 +369,7 @@ func (v *View) buildUI() {
 		kv := int(keyval)
 		if isSearchKey(kv) {
 			query := v.searchEntry.GetText()
-			v.debounceSearch(query)
+			v.run(func(c *Controller) []Effect { return c.QueryChanged(query) })
 		}
 	}
 	v.retain(searchReleasedCb)
@@ -453,64 +425,38 @@ func (v *View) newTabButton(label, class string, onClick func()) *gtklib.Button 
 func (v *View) switchMainTab(mode Mode) {
 	switch mode {
 	case ModeForm:
-		v.startQuickAddForCategory()
+		v.startQuickAdd(false)
 	case ModeGenerator:
 		v.startPasswordGenerator()
 	default:
-		v.setMode(ModeSearch)
-		v.render()
-		v.updateTabStyles()
-		v.searchEntry.GrabFocus()
-		v.refreshSearchRows()
+		query := v.searchEntry.GetText()
+		v.run(func(c *Controller) []Effect { return c.ShowSearch(query) })
 	}
 }
 
 func (v *View) setCategory(category itemCategory) {
-	v.mu.Lock()
-	v.activeCategory = category
-	mode := v.state.Mode
-	v.mu.Unlock()
-	v.updateTabStyles()
-	if mode == ModeForm {
-		v.startQuickAddForCategory()
-		return
-	}
-	v.refreshSearchRows()
+	query := v.searchEntry.GetText()
+	v.run(func(c *Controller) []Effect {
+		return c.SetCategory(category, query, v.prefillPassword)
+	})
 }
 
-func (v *View) startQuickAddForCategory() {
-	v.mu.Lock()
-	category := v.activeCategory
-	if category == categoryAll {
-		category = categoryLogin
-		v.activeCategory = categoryLogin
-	}
-	v.mu.Unlock()
-	v.updateTabStyles()
-
-	item := vault.Item{Type: categoryItemType(category)}
-	if item.Type == vault.ItemTypeLogin {
-		item.Login = &vault.Login{}
-		query := strings.TrimSpace(v.searchEntry.GetText())
-		if query != "" {
-			item.Login.URIs = []vault.URI{{URI: query}}
+// startQuickAdd opens a blank add form. With login set it always starts on the
+// Login category (Ctrl+N); otherwise it uses the active category.
+func (v *View) startQuickAdd(login bool) {
+	site := v.searchEntry.GetText()
+	v.run(func(c *Controller) []Effect {
+		if login {
+			return c.StartQuickAddLogin(site, v.prefillPassword)
 		}
-		if password, err := v.generatePasswordFromCurrentOptions(); err == nil {
-			item.Login.Password = password
-		} else {
-			logOverlayError(v.ctx, "prefill_generated_password", err)
-			v.mu.Lock()
-			v.state.SetStatus(Status{Text: err.Error(), Error: err.Error()})
-			v.mu.Unlock()
-		}
-	}
-	v.showFormItem(item)
+		return c.StartQuickAdd(site, v.prefillPassword)
+	})
 }
 
 func (v *View) updateTabStyles() {
 	v.mu.Lock()
-	mode := v.state.Mode
-	category := v.activeCategory
+	mode := v.ctrl.State.Mode
+	category := v.ctrl.Category
 	v.mu.Unlock()
 	setActive := func(btn *gtklib.Button, active bool) {
 		if btn == nil {
@@ -583,7 +529,7 @@ func (v *View) AttachKeyController(window *gtklib.Window) {
 		kv := int(keyval)
 
 		v.mu.Lock()
-		mode := v.state.Mode
+		mode := v.ctrl.State.Mode
 
 		handleUnlock := func() bool {
 			if kv == gdk.KEY_Escape {
@@ -601,8 +547,8 @@ func (v *View) AttachKeyController(window *gtklib.Window) {
 				// Clear all temp fields when abandoning setup. When backing out
 				// from confirm to PIN entry, clear only the pending PIN and keep
 				// the captured master password so the user can retry PIN entry.
-				backToUnlock := v.state.Mode == ModePINSetup
-				v.state.Back()
+				backToUnlock := v.ctrl.State.Mode == ModePINSetup
+				v.ctrl.State.Back()
 				if backToUnlock {
 					v.clearTempFields()
 				} else {
@@ -634,7 +580,7 @@ func (v *View) AttachKeyController(window *gtklib.Window) {
 		handleTwoFactor := func() bool {
 			if kv == gdk.KEY_Escape {
 				v.clearPendingTwoFactor()
-				v.state.Back()
+				v.ctrl.State.Back()
 				v.mu.Unlock()
 				idleAddOnce(func() {
 					placeholder := "Master password"
@@ -662,12 +608,12 @@ func (v *View) AttachKeyController(window *gtklib.Window) {
 			}
 			switch kv {
 			case gdk.KEY_Up:
-				v.state.Move(-1)
+				v.ctrl.State.Move(-1)
 				v.mu.Unlock()
 				idleAddOnce(func() { v.renderRows() })
 				return true
 			case gdk.KEY_Down:
-				v.state.Move(1)
+				v.ctrl.State.Move(1)
 				v.mu.Unlock()
 				idleAddOnce(func() { v.renderRows() })
 				return true
@@ -680,7 +626,7 @@ func (v *View) AttachKeyController(window *gtklib.Window) {
 			case gdk.KEY_n:
 				if mod&gdk.ControlMaskValue != 0 {
 					v.mu.Unlock()
-					idleAddOnce(func() { v.startQuickAddLogin() })
+					idleAddOnce(func() { v.startQuickAdd(true) })
 					return true
 				}
 				v.mu.Unlock()
@@ -697,10 +643,8 @@ func (v *View) AttachKeyController(window *gtklib.Window) {
 
 		handleDetail := func() bool {
 			if kv == gdk.KEY_Escape || kv == gdk.KEY_BackSpace {
-				mode := v.backMode()
 				v.mu.Unlock()
-				v.setBackgroundSyncSuspended(syncSuspendedForMode(mode))
-				idleAddOnce(func() { v.render() })
+				v.run(func(c *Controller) []Effect { return c.Back() })
 				return true
 			}
 			v.mu.Unlock()
@@ -718,21 +662,16 @@ func (v *View) AttachKeyController(window *gtklib.Window) {
 				}
 			}
 			if kv == gdk.KEY_Escape || kv == gdk.KEY_BackSpace {
-				mode := v.backMode()
 				v.mu.Unlock()
-				v.setBackgroundSyncSuspended(syncSuspendedForMode(mode))
-				idleAddOnce(func() { v.render() })
+				v.run(func(c *Controller) []Effect { return c.Back() })
 				return true
 			}
 			ctrlPressed := mod&gdk.ControlMaskValue != 0
 			isEnter := kv == gdk.KEY_Return || kv == gdk.KEY_KP_Enter
 			isSaveKey := kv == gdk.KEY_s
 			if ctrlPressed && (isEnter || isSaveKey) {
-				submit := v.formSubmit
 				v.mu.Unlock()
-				if submit != nil {
-					submit()
-				}
+				v.submitForm()
 				return true
 			}
 			v.mu.Unlock()
@@ -741,10 +680,8 @@ func (v *View) AttachKeyController(window *gtklib.Window) {
 
 		handleGenerator := func() bool {
 			if kv == gdk.KEY_Escape || kv == gdk.KEY_BackSpace {
-				mode := v.backMode()
 				v.mu.Unlock()
-				v.setBackgroundSyncSuspended(syncSuspendedForMode(mode))
-				idleAddOnce(func() { v.render() })
+				v.run(func(c *Controller) []Effect { return c.Back() })
 				return true
 			}
 			v.mu.Unlock()
@@ -781,7 +718,7 @@ func (v *View) GrabFocus() {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
-	switch v.state.Mode {
+	switch v.ctrl.State.Mode {
 	case ModePINUnlock:
 		v.passwordEntry.GrabFocus()
 	case ModeUnlock, ModePINRenew, ModeKeyringError, ModePINSetup, ModePINConfirm, ModeTwoFactor:
@@ -795,8 +732,8 @@ func (v *View) GrabFocus() {
 	case ModeDetail:
 		v.detailBox.GrabFocus()
 	case ModeForm:
-		if v.formInitialFocus != nil {
-			v.formInitialFocus.GrabFocus()
+		if v.formUI != nil && v.formUI.initialFocus != nil {
+			v.formUI.initialFocus.GrabFocus()
 		} else {
 			v.formBox.GrabFocus()
 		}
@@ -807,36 +744,6 @@ func (v *View) GrabFocus() {
 			v.generatorBox.GrabFocus()
 		}
 	}
-}
-
-func (v *View) focusFormInitial() {
-	v.mu.Lock()
-	entry := v.formInitialFocus
-	v.mu.Unlock()
-	if entry != nil {
-		entry.GrabFocus()
-		return
-	}
-	v.formBox.GrabFocus()
-}
-
-func (v *View) startQuickAddLogin() {
-	v.mu.Lock()
-	v.activeCategory = categoryLogin
-	v.mu.Unlock()
-	v.startQuickAddForCategory()
-}
-
-func (v *View) showFormItem(item vault.Item) {
-	v.mu.Lock()
-	v.currentItem = item
-	v.mu.Unlock()
-	v.setMode(ModeForm)
-
-	v.renderForm(item)
-	v.render()
-	v.updateTabStyles()
-	v.focusFormInitial()
 }
 
 // --- Internal methods ---
@@ -875,13 +782,7 @@ func (v *View) pinUnlockEmail() string {
 }
 
 func (v *View) enterSearchMode() {
-	v.mu.Lock()
-	v.state.Error = ""
-	v.mu.Unlock()
-	v.setMode(ModeSearch)
-	v.render()
-	v.searchEntry.GrabFocus()
-	v.loadAllItems()
+	v.run(func(c *Controller) []Effect { return c.EnterSearch() })
 }
 
 // showUnlock makes the unlock view visible and hides others.
@@ -932,8 +833,8 @@ func (v *View) overlayTwoFactorPrompt() auth.TwoFactorPrompt {
 			v.mu.Lock()
 			v.clearPendingTwoFactor()
 			v.pendingTwoFactor = prompt
-			v.state.Mode = ModeTwoFactor
-			v.state.Error = ""
+			v.ctrl.State.Mode = ModeTwoFactor
+			v.ctrl.State.Error = ""
 			v.mu.Unlock()
 
 			v.passwordEntry.SetText("")
@@ -950,7 +851,7 @@ func (v *View) overlayTwoFactorPrompt() auth.TwoFactorPrompt {
 				v.mu.Lock()
 				if v.pendingTwoFactor == prompt {
 					v.pendingTwoFactor = nil
-					v.state.Mode = ModeUnlock
+					v.ctrl.State.Mode = ModeUnlock
 					v.mu.Unlock()
 
 					placeholder := "Master password"
@@ -1097,7 +998,7 @@ func (v *View) doPINSetup() {
 
 	v.mu.Lock()
 	v.tempPIN = pin
-	v.state.Mode = ModePINConfirm
+	v.ctrl.State.Mode = ModePINConfirm
 	v.mu.Unlock()
 
 	idleAddOnce(func() {
@@ -1125,7 +1026,7 @@ func (v *View) doPINConfirm() {
 		// Go back to PIN entry so user can retry without retyping the
 		// already captured master password.
 		v.mu.Lock()
-		v.state.Mode = ModePINSetup
+		v.ctrl.State.Mode = ModePINSetup
 		v.tempPIN = ""
 		v.mu.Unlock()
 		idleAddOnce(func() {
@@ -1168,7 +1069,7 @@ func (v *View) doPINConfirm() {
 				v.passwordEntry.SetVisibility(false)
 				v.passwordEntry.SetText("")
 				v.mu.Lock()
-				v.state.Mode = ModeUnlock
+				v.ctrl.State.Mode = ModeUnlock
 				v.mu.Unlock()
 				v.render()
 			})
@@ -1223,103 +1124,6 @@ func (v *View) doPINUnlock(ctx context.Context) {
 	}()
 }
 
-// loadAllItems fetches items in a goroutine and updates rows.
-func (v *View) loadAllItems() {
-	go func() {
-		items, err := v.service.Items(v.ctx)
-		if err != nil {
-			logOverlayError(v.ctx, "load_items", err)
-			idleAddOnce(func() {
-				v.mu.Lock()
-				v.state.Error = genericOperationError
-				v.mu.Unlock()
-				v.render()
-			})
-			return
-		}
-		conflicts, err := v.service.Conflicts(v.ctx)
-		if err != nil {
-			logOverlayError(v.ctx, "load_conflicts", err)
-		}
-		rows := RowsWithConflictPlaceholders(RowsFromItems(items), conflicts)
-		idleAddOnce(func() {
-			v.mu.Lock()
-			rows = v.filterRowsLocked(rows)
-			v.state.Query = ""
-			v.state.SetRows(rows)
-			v.state.SetStatus(StatusAfterRowsLoaded(v.state.Status, len(items)))
-			v.mu.Unlock()
-			v.renderRows()
-			v.renderStatus()
-		})
-	}()
-}
-
-// debounceSearch cancels any pending search and schedules a new one with the
-// given query. The query must be read on the GTK thread before calling this.
-func (v *View) debounceSearch(query string) {
-	v.mu.Lock()
-	if v.searchTimer != nil {
-		v.searchTimer.Stop()
-	}
-	v.searchTimer = time.AfterFunc(150*time.Millisecond, func() {
-		if query == "" {
-			v.loadAllItems()
-			return
-		}
-		v.doSearch(query)
-	})
-	v.mu.Unlock()
-}
-
-// doSearch runs a search query.
-func (v *View) doSearch(query string) {
-	if !v.searchLock.TryLock() {
-		return
-	}
-	go func() {
-		defer v.searchLock.Unlock()
-		results, err := v.service.Search(v.ctx, query, 50)
-		if err != nil {
-			logOverlayError(v.ctx, "search", err)
-			idleAddOnce(func() {
-				v.mu.Lock()
-				v.state.SetStatus(Status{Text: genericSearchError, Error: genericSearchError})
-				v.mu.Unlock()
-				v.renderStatus()
-			})
-			return
-		}
-		conflicts, err := v.service.Conflicts(v.ctx)
-		if err != nil {
-			logOverlayError(v.ctx, "search_conflicts", err)
-		}
-		rows := RowsWithConflictPlaceholders(RowsFromScored(results), conflicts)
-		idleAddOnce(func() {
-			v.mu.Lock()
-			rows = v.filterRowsLocked(rows)
-			v.state.Query = query
-			v.state.SetRows(rows)
-			v.mu.Unlock()
-			v.renderRows()
-		})
-	}()
-}
-
-func (v *View) filterRowsLocked(rows []Row) []Row {
-	if v.activeCategory == categoryAll {
-		return rows
-	}
-	want := string(categoryItemType(v.activeCategory))
-	filtered := rows[:0]
-	for _, row := range rows {
-		if row.Type == want || (row.Conflict && row.ConflictID != "" && row.Type == "") {
-			filtered = append(filtered, row)
-		}
-	}
-	return filtered
-}
-
 // doPrimaryAction performs the configured primary action on the selected row.
 func (v *View) doPrimaryAction() {
 	v.doSearchEnterAction(false, false)
@@ -1327,131 +1131,8 @@ func (v *View) doPrimaryAction() {
 
 // doSearchEnterAction performs the Enter shortcut action on the selected row.
 func (v *View) doSearchEnterAction(ctrlPressed, altPressed bool) {
-	v.mu.Lock()
-	row, ok := v.state.SelectedRow()
-	if !ok {
-		v.mu.Unlock()
-		return
-	}
-	v.mu.Unlock()
-
 	cfg := v.service.Config()
-	action := SearchEnterActionForModifiers(row, cfg, ctrlPressed, altPressed)
-	switch action {
-	case ActionCopyPassword, ActionCopyUsername:
-		ttl, closeAfterCopy := SearchCopyOptions(cfg)
-		v.copySelectedRow(row, action, ttl, closeAfterCopy)
-	default:
-		detailRow, opened := v.openDetailSelected()
-		if !opened {
-			return
-		}
-		v.setMode(ModeDetail)
-		v.loadDetail(detailRow)
-		idleAddOnce(func() { v.render() })
-	}
-}
-
-func (v *View) copySelectedRow(row Row, action Action, ttl time.Duration, closeAfterCopy bool) {
-	go func() {
-		item, err := v.service.Get(v.ctx, row.ID)
-		if err != nil {
-			logOverlayError(v.ctx, "copy_primary_load_item", err)
-			idleAddOnce(func() {
-				v.mu.Lock()
-				v.state.SetStatus(Status{Text: genericOperationError, Error: genericOperationError})
-				v.mu.Unlock()
-				v.renderStatus()
-			})
-			return
-		}
-
-		status, err := copyPrimaryAction(v.ctx, v.clipboard, item, action, ttl)
-		if err != nil {
-			logOverlayError(v.ctx, "copy_primary_action", err)
-			statusText := primaryActionErrorStatus(action, err)
-			idleAddOnce(func() {
-				v.mu.Lock()
-				v.state.SetStatus(Status{Text: statusText, Error: statusText})
-				v.mu.Unlock()
-				v.renderStatus()
-			})
-			return
-		}
-
-		idleAddOnce(func() {
-			v.mu.Lock()
-			v.state.SetStatus(Status{Text: status})
-			v.mu.Unlock()
-			v.renderStatus()
-
-			if closeAfterCopy {
-				// Delay briefly so the content is copied to the clipboard before the overlay is closed.
-				time.AfterFunc(200*time.Millisecond, func() {
-					idleAddOnce(v.quit)
-				})
-				return
-			}
-		})
-	}()
-}
-
-// loadDetail fetches a single item and renders the detail view. Conflict
-// placeholder rows can still render a resolvable detail when item data is not
-// loaded.
-func (v *View) loadDetail(row Row) {
-	go func() {
-		if row.ConflictID != "" {
-			conflictDetail, err := v.service.ConflictDetail(v.ctx, row.ConflictID)
-			if err == nil {
-				if conflictDetail.LocalItem != nil {
-					v.mu.Lock()
-					v.currentItem = *conflictDetail.LocalItem
-					v.mu.Unlock()
-				}
-				idleAddOnce(func() {
-					v.renderDetail(DetailFromConflictDetail(conflictDetail))
-				})
-				return
-			}
-			logOverlayError(v.ctx, "load_conflict_detail", err)
-		}
-
-		item, err := v.service.Get(v.ctx, row.ID)
-		if err != nil {
-			if row.ConflictID != "" {
-				idleAddOnce(func() {
-					v.mu.Lock()
-					v.currentItem = vault.Item{}
-					v.mu.Unlock()
-					v.renderDetail(Detail{
-						ID:           row.ID,
-						Title:        row.Title,
-						Type:         "Conflict",
-						Conflict:     true,
-						ConflictID:   row.ConflictID,
-						ConflictOnly: true,
-					})
-				})
-				return
-			}
-			logOverlayError(v.ctx, "load_detail", err)
-			idleAddOnce(func() {
-				v.mu.Lock()
-				v.state.Error = genericOperationError
-				v.mu.Unlock()
-				v.render()
-			})
-			return
-		}
-		v.mu.Lock()
-		v.currentItem = item
-		v.mu.Unlock()
-		detail := DetailFromItem(item)
-		idleAddOnce(func() {
-			v.renderDetail(detail)
-		})
-	}()
+	v.run(func(c *Controller) []Effect { return c.Activate(ctrlPressed, altPressed, cfg) })
 }
 
 // showError sets the error label text and visibility.
@@ -1470,7 +1151,7 @@ func (v *View) showError(msg string) {
 // render updates the visibility of all panels based on current mode.
 func (v *View) render() {
 	v.mu.Lock()
-	mode := v.state.Mode
+	mode := v.ctrl.State.Mode
 	v.mu.Unlock()
 
 	v.renderUnlockModeWidgets(mode)
@@ -1500,8 +1181,8 @@ func (v *View) renderRows() {
 		v.rowsBox.Remove(child)
 	}
 
-	if len(v.state.Rows) == 0 {
-		emptyText := EmptyRowsText(v.state.Query, v.state.Status)
+	if len(v.ctrl.State.Rows) == 0 {
+		emptyText := EmptyRowsText(v.ctrl.State.Query, v.ctrl.State.Status)
 		emptyLabel := gtklib.NewLabel(&emptyText)
 		emptyLabel.SetHalign(gtklib.AlignCenterValue)
 		emptyLabel.SetXalign(0.5)
@@ -1510,8 +1191,8 @@ func (v *View) renderRows() {
 		return
 	}
 
-	for i, row := range v.state.Rows {
-		rowWidget := v.buildRowWidget(row, i == v.state.Selected)
+	for i, row := range v.ctrl.State.Rows {
+		rowWidget := v.buildRowWidget(row, i == v.ctrl.State.Selected)
 		v.rowsBox.Append(&rowWidget.Widget)
 	}
 }
@@ -1591,11 +1272,7 @@ func (v *View) renderDetail(detail Detail) {
 	// Back button
 	backBtn := gtklib.NewButtonWithLabel("← Back")
 	backClickedCb := func(_ gtklib.Button) {
-		v.mu.Lock()
-		mode := v.backMode()
-		v.mu.Unlock()
-		v.setBackgroundSyncSuspended(syncSuspendedForMode(mode))
-		idleAddOnce(func() { v.render() })
+		v.run(func(c *Controller) []Effect { return c.Back() })
 	}
 	handler := backBtn.ConnectClicked(&backClickedCb)
 	v.retainDynamic(&backBtn.Object, handler, backClickedCb)
@@ -1698,7 +1375,9 @@ func (v *View) renderDetail(detail Detail) {
 		for _, action := range ConflictResolutionActions(detail) {
 			resolveBtn := gtklib.NewButtonWithLabel(action.Label)
 			resolveCb := func(_ gtklib.Button) {
-				v.resolveConflict(detail.ConflictID, action.Resolution)
+				v.run(func(c *Controller) []Effect {
+					return c.ResolveConflict(detail.ConflictID, action.Resolution)
+				})
 			}
 			handler := resolveBtn.ConnectClicked(&resolveCb)
 			v.retainDynamic(&resolveBtn.Object, handler, resolveCb)
@@ -1720,15 +1399,7 @@ func (v *View) renderDetail(detail Detail) {
 		// Edit button
 		editBtn := gtklib.NewButtonWithLabel("Edit")
 		editCb := func(_ gtklib.Button) {
-			v.mu.Lock()
-			item := v.currentItem
-			v.mu.Unlock()
-			v.setMode(ModeForm)
-			idleAddOnce(func() {
-				v.renderForm(item)
-				v.render()
-				v.focusFormInitial()
-			})
+			v.run(func(c *Controller) []Effect { return c.Edit() })
 		}
 		handler0 := editBtn.ConnectClicked(&editCb)
 		v.retainDynamic(&editBtn.Object, handler0, editCb)
@@ -1738,19 +1409,7 @@ func (v *View) renderDetail(detail Detail) {
 		if !detail.Deleted {
 			trashBtn := gtklib.NewButtonWithLabel("Trash")
 			trashCb := func(_ gtklib.Button) {
-				go func() {
-					if err := v.service.Trash(v.ctx, detail.ID); err != nil {
-						logOverlayError(v.ctx, "trash", err)
-						v.showError(genericOperationError)
-						return
-					}
-					idleAddOnce(func() {
-						v.mu.Lock()
-						v.state.Back()
-						v.mu.Unlock()
-						v.render()
-					})
-				}()
+				v.run(func(c *Controller) []Effect { return c.Mutate(MutationTrash, detail.ID) })
 			}
 			handler := trashBtn.ConnectClicked(&trashCb)
 			v.retainDynamic(&trashBtn.Object, handler, trashCb)
@@ -1758,19 +1417,7 @@ func (v *View) renderDetail(detail Detail) {
 		} else {
 			restoreBtn := gtklib.NewButtonWithLabel("Restore")
 			restoreCb := func(_ gtklib.Button) {
-				go func() {
-					if _, err := v.service.Restore(v.ctx, detail.ID); err != nil {
-						logOverlayError(v.ctx, "restore", err)
-						v.showError(genericOperationError)
-						return
-					}
-					idleAddOnce(func() {
-						v.mu.Lock()
-						v.state.Back()
-						v.mu.Unlock()
-						v.render()
-					})
-				}()
+				v.run(func(c *Controller) []Effect { return c.Mutate(MutationRestore, detail.ID) })
 			}
 			handler := restoreBtn.ConnectClicked(&restoreCb)
 			v.retainDynamic(&restoreBtn.Object, handler, restoreCb)
@@ -1778,19 +1425,7 @@ func (v *View) renderDetail(detail Detail) {
 
 			deleteBtn := gtklib.NewButtonWithLabel("Delete permanently")
 			deleteCb := func(_ gtklib.Button) {
-				go func() {
-					if err := v.service.Delete(v.ctx, detail.ID); err != nil {
-						logOverlayError(v.ctx, "delete", err)
-						v.showError(genericOperationError)
-						return
-					}
-					idleAddOnce(func() {
-						v.mu.Lock()
-						v.state.Back()
-						v.mu.Unlock()
-						v.render()
-					})
-				}()
+				v.run(func(c *Controller) []Effect { return c.Mutate(MutationDelete, detail.ID) })
 			}
 			handler = deleteBtn.ConnectClicked(&deleteCb)
 			v.retainDynamic(&deleteBtn.Object, handler, deleteCb)
@@ -1801,439 +1436,14 @@ func (v *View) renderDetail(detail Detail) {
 	v.detailBox.SetVisible(true)
 }
 
-func (v *View) resolveConflict(conflictID string, resolution coresync.ConflictResolution) {
-	if conflictID == "" {
-		return
-	}
-	v.mu.Lock()
-	v.state.SetStatus(Status{Text: "Resolving conflict…", Syncing: true})
-	v.mu.Unlock()
-	v.renderStatus()
-
-	go func() {
-		if err := v.service.ResolveConflict(v.ctx, conflictID, resolution); err != nil {
-			logOverlayError(v.ctx, "resolve_conflict", err)
-			idleAddOnce(func() {
-				v.mu.Lock()
-				v.state.SetStatus(Status{Text: genericOperationError, Error: genericOperationError})
-				v.mu.Unlock()
-				v.renderStatus()
-			})
-			return
-		}
-		if err := v.service.SyncNow(v.ctx); err != nil {
-			logOverlayError(v.ctx, "sync_after_conflict_resolve", err)
-			idleAddOnce(func() {
-				v.mu.Lock()
-				v.state.SetStatus(Status{Text: genericOperationError, Error: genericOperationError})
-				v.mu.Unlock()
-				v.renderStatus()
-			})
-			return
-		}
-
-		idleAddOnce(func() {
-			v.setMode(ModeSearch)
-			v.mu.Lock()
-			v.state.DetailID = ""
-			v.mu.Unlock()
-			v.render()
-			v.refreshSearchRows()
-		})
-	}()
-}
-
-// renderForm populates the form box with editable entries for the given item.
-func (v *View) renderForm(item vault.Item) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-
-	// Clear existing children and dynamic callbacks.
-	for {
-		child := v.formBox.GetFirstChild()
-		if child == nil || child.Ptr == 0 {
-			break
-		}
-		v.formBox.Remove(child)
-	}
-	v.resetDynamicCallbacks()
-
-	editable := EditableFromItem(item)
-	v.formInitialFocus = nil
-	v.formSubmit = nil
-
-	// Back button
-	backBtn := gtklib.NewButtonWithLabel("← Back")
-	backClickedCb := func(_ gtklib.Button) {
-		v.mu.Lock()
-		mode := v.backMode()
-		v.mu.Unlock()
-		v.setBackgroundSyncSuspended(syncSuspendedForMode(mode))
-		idleAddOnce(func() { v.render() })
-	}
-	handler := backBtn.ConnectClicked(&backClickedCb)
-	v.retainDynamic(&backBtn.Object, handler, backClickedCb)
-	v.formBox.Append(&backBtn.Widget)
-
-	// Scrollable content area
-	uiScale := 1.0
-	if cfg := v.service.Config(); cfg != nil {
-		uiScale = cfg.Appearance.UIScale
-	}
-	contentHeight := ItemFormContentHeight(item.Type, uiScale)
-	scrollWin := gtklib.NewScrolledWindow()
-	scrollWin.SetPolicy(gtklib.PolicyNeverValue, gtklib.PolicyAutomaticValue)
-	scrollWin.SetMinContentHeight(contentHeight)
-	scrollWin.SetMaxContentHeight(contentHeight)
-	scrollWin.SetPropagateNaturalHeight(true)
-	scrollWin.SetPropagateNaturalWidth(false)
-	scrollWin.SetMaxContentWidth(defaultOmniboxWidth)
-	formContent := gtklib.NewBox(gtklib.OrientationVerticalValue, 4)
-	scrollWin.SetChild(&formContent.Widget)
-	v.formBox.Append(&scrollWin.Widget)
-
-	// Type-specific fields rendered by helper methods. Login creation is ordered
-	// for quick keyboard entry: Site → Username → Password, with Name optional
-	// and auto-derived when left blank.
-	var nameEntry *gtklib.Entry
-	var usernameEntry, uriEntry, pwEntry, totpEntry *gtklib.Entry
-	var chEntry, brandEntry, numEntry, expMEntry, expYEntry, codeEntry *gtklib.Entry
-	var fnEntry, lnEntry, emailEntry, phoneEntry, idUserEntry *gtklib.Entry
-	var ssnEntry, passportEntry, licenseEntry *gtklib.Entry
-
-	switch item.Type {
-	case vault.ItemTypeLogin:
-		usernameEntry, uriEntry, pwEntry, totpEntry = v.renderLoginFormFields(formContent, editable)
-		v.formInitialFocus = uriEntry
-		nameText := "Name (optional, auto-generated)"
-		nameLabel := gtklib.NewLabel(&nameText)
-		formContent.Append(&nameLabel.Widget)
-		nameEntry = gtklib.NewEntry()
-		nameEntry.SetText(editable.Name)
-		formContent.Append(&nameEntry.Widget)
-	default:
-		nameText := "Name"
-		nameLabel := gtklib.NewLabel(&nameText)
-		formContent.Append(&nameLabel.Widget)
-		nameEntry = gtklib.NewEntry()
-		nameEntry.SetText(editable.Name)
-		formContent.Append(&nameEntry.Widget)
-		v.formInitialFocus = nameEntry
-	}
-
-	switch item.Type {
-	case vault.ItemTypeSecureNote:
-		// No additional fields beyond Name and Notes.
-	case vault.ItemTypeCard:
-		chEntry, brandEntry, numEntry, expMEntry, expYEntry, codeEntry = v.renderCardFormFields(formContent, editable)
-	case vault.ItemTypeIdentity:
-		fnEntry, lnEntry, emailEntry, phoneEntry, idUserEntry, ssnEntry, passportEntry, licenseEntry = v.renderIdentityFormFields(formContent, editable)
-	}
-
-	// Notes entry (for all types)
-	notesText := "Notes"
-	notesLabel := gtklib.NewLabel(&notesText)
-	formContent.Append(&notesLabel.Widget)
-	notesEntry := gtklib.NewEntry()
-	notesEntry.SetText(editable.Notes)
-	formContent.Append(&notesEntry.Widget)
-
-	// Form-local errors stay visible in form mode and do not rebuild the form,
-	// so invalid submissions preserve typed values and focus.
-	formErrorText := ""
-	formErrorLabel := gtklib.NewLabel(&formErrorText)
-	formErrorLabel.GetStyleContext().AddClass("glsbw-error")
-	formErrorLabel.SetVisible(false)
-	formContent.Append(&formErrorLabel.Widget)
-	showFormError := func(msg string) {
-		if msg == "" {
-			formErrorLabel.SetText("")
-			formErrorLabel.SetVisible(false)
-			return
-		}
-		formErrorLabel.SetText(msg)
-		formErrorLabel.SetVisible(true)
-	}
-
-	// Snapshot current item under lock for the save goroutine.
-	current := v.currentItem
-	isUpdate := current.ID != ""
-
-	// Save button
-	saveBtn := gtklib.NewButtonWithLabel("Save")
-	saving := false
-	submit := func() {
-		if saving {
-			return
-		}
-		e := EditableFromItem(current)
-		e.Name = nameEntry.GetText()
-		e.Notes = notesEntry.GetText()
-
-		switch item.Type {
-		case vault.ItemTypeLogin:
-			e.Username = usernameEntry.GetText()
-			e.URI = uriEntry.GetText()
-			e.Password = pwEntry.GetText()
-			e.TOTP = totpEntry.GetText()
-		case vault.ItemTypeSecureNote:
-			// Name and Notes already set.
-		case vault.ItemTypeCard:
-			e.CardholderName = chEntry.GetText()
-			e.CardBrand = brandEntry.GetText()
-			e.CardNumber = numEntry.GetText()
-			e.CardExpMonth = expMEntry.GetText()
-			e.CardExpYear = expYEntry.GetText()
-			e.CardCode = codeEntry.GetText()
-		case vault.ItemTypeIdentity:
-			e.IdentityFirstName = fnEntry.GetText()
-			e.IdentityLastName = lnEntry.GetText()
-			e.IdentityEmail = emailEntry.GetText()
-			e.IdentityPhone = phoneEntry.GetText()
-			e.IdentityUsername = idUserEntry.GetText()
-			e.IdentitySSN = ssnEntry.GetText()
-			e.IdentityPassportNumber = passportEntry.GetText()
-			e.IdentityLicenseNumber = licenseEntry.GetText()
-		}
-
-		if err := ValidateItem(e); err != nil {
-			showFormError(err.Error())
-			return
-		}
-
-		updated := e.BuildItem()
-		showFormError("")
-		saving = true
-		saveBtn.SetSensitive(false)
-
-		go func() {
-			var result vault.Item
-			var err error
-			if isUpdate {
-				result, err = v.service.Update(v.ctx, current.ID, updated)
-			} else {
-				result, err = v.service.Create(v.ctx, updated)
-			}
-			if err != nil {
-				operation := "create"
-				if isUpdate {
-					operation = "update"
-				}
-				logOverlayError(v.ctx, operation, err)
-				idleAddOnce(func() {
-					saving = false
-					saveBtn.SetSensitive(true)
-					showFormError(genericSaveError)
-				})
-				return
-			}
-			idleAddOnce(func() {
-				v.mu.Lock()
-				v.state.Error = ""
-				v.state.SetStatus(Status{Text: "Saved " + result.Name})
-				v.currentItem = result
-				v.state.DetailID = ""
-				v.mu.Unlock()
-				v.setMode(ModeSearch)
-				v.render()
-				v.refreshSearchRows()
-				v.searchEntry.GrabFocus()
-			})
-		}()
-	}
-	v.formSubmit = submit
-	if pwEntry != nil {
-		activateCb := func(_ gtklib.Entry) { submit() }
-		handler := pwEntry.ConnectActivate(&activateCb)
-		v.retainDynamic(&pwEntry.Object, handler, activateCb)
-	}
-	saveCb := func(_ gtklib.Button) { submit() }
-	handler1 := saveBtn.ConnectClicked(&saveCb)
-	v.retainDynamic(&saveBtn.Object, handler1, saveCb)
-	formContent.Append(&saveBtn.Widget)
-}
-
-// renderLoginFormFields renders login-specific fields in quick-add order
-// (URI/Site, Username, Password, then TOTP) and returns the created entries.
-func (v *View) renderLoginFormFields(formContent *gtklib.Box, editable EditableItem) (usernameEntry, uriEntry, pwEntry, totpEntry *gtklib.Entry) {
-	uriText := "Site / URI"
-	uriLabel := gtklib.NewLabel(&uriText)
-	formContent.Append(&uriLabel.Widget)
-	uriEntry = gtklib.NewEntry()
-	uriEntry.SetText(editable.URI)
-	formContent.Append(&uriEntry.Widget)
-
-	uText := "Username"
-	usernameLabel := gtklib.NewLabel(&uText)
-	formContent.Append(&usernameLabel.Widget)
-	usernameEntry = gtklib.NewEntry()
-	usernameEntry.SetText(editable.Username)
-	formContent.Append(&usernameEntry.Widget)
-
-	pwText := "Password"
-	pwLabel := gtklib.NewLabel(&pwText)
-	formContent.Append(&pwLabel.Widget)
-	passwordRow := gtklib.NewBox(gtklib.OrientationHorizontalValue, 6)
-	pwEntry = gtklib.NewEntry()
-	pwEntry.SetText(editable.Password)
-	pwEntry.SetVisibility(false)
-	pwEntry.SetHexpand(true)
-	passwordRow.Append(&pwEntry.Widget)
-	refreshBtn := gtklib.NewButtonWithLabel("↻")
-	refreshTooltip := "Regenerate password from Gen tab settings"
-	refreshBtn.SetTooltipText(&refreshTooltip)
-	refreshCb := func(_ gtklib.Button) {
-		password, err := v.generatePasswordFromCurrentOptions()
-		if err != nil {
-			v.mu.Lock()
-			v.state.SetStatus(Status{Text: err.Error(), Error: err.Error()})
-			v.mu.Unlock()
-			v.renderStatus()
-			return
-		}
-		pwEntry.SetText(password)
-		v.mu.Lock()
-		v.state.SetStatus(Status{Text: "Generated password refreshed"})
-		v.mu.Unlock()
-		v.renderStatus()
-	}
-	handler := refreshBtn.ConnectClicked(&refreshCb)
-	v.retainDynamic(&refreshBtn.Object, handler, refreshCb)
-	passwordRow.Append(&refreshBtn.Widget)
-	formContent.Append(&passwordRow.Widget)
-
-	totpText := "TOTP (optional)"
-	totpLabel := gtklib.NewLabel(&totpText)
-	formContent.Append(&totpLabel.Widget)
-	totpEntry = gtklib.NewEntry()
-	totpEntry.SetText(editable.TOTP)
-	totpEntry.SetVisibility(false)
-	formContent.Append(&totpEntry.Widget)
-	return
-}
-
-// renderCardFormFields renders card-specific fields (CardholderName, Brand, Number,
-// ExpMonth, ExpYear, Code) into formContent and returns the created entry pointers.
-func (v *View) renderCardFormFields(formContent *gtklib.Box, editable EditableItem) (chEntry, brandEntry, numEntry, expMEntry, expYEntry, codeEntry *gtklib.Entry) {
-	chText := "Cardholder name"
-	chLabel := gtklib.NewLabel(&chText)
-	formContent.Append(&chLabel.Widget)
-	chEntry = gtklib.NewEntry()
-	chEntry.SetText(editable.CardholderName)
-	formContent.Append(&chEntry.Widget)
-
-	brandText := "Brand"
-	brandLabel := gtklib.NewLabel(&brandText)
-	formContent.Append(&brandLabel.Widget)
-	brandEntry = gtklib.NewEntry()
-	brandEntry.SetText(editable.CardBrand)
-	formContent.Append(&brandEntry.Widget)
-
-	numText := "Number"
-	numLabel := gtklib.NewLabel(&numText)
-	formContent.Append(&numLabel.Widget)
-	numEntry = gtklib.NewEntry()
-	numEntry.SetText(editable.CardNumber)
-	numEntry.SetVisibility(false)
-	formContent.Append(&numEntry.Widget)
-
-	expMText := "Exp month"
-	expMLabel := gtklib.NewLabel(&expMText)
-	formContent.Append(&expMLabel.Widget)
-	expMEntry = gtklib.NewEntry()
-	expMEntry.SetText(editable.CardExpMonth)
-	formContent.Append(&expMEntry.Widget)
-
-	expYText := "Exp year"
-	expYLabel := gtklib.NewLabel(&expYText)
-	formContent.Append(&expYLabel.Widget)
-	expYEntry = gtklib.NewEntry()
-	expYEntry.SetText(editable.CardExpYear)
-	formContent.Append(&expYEntry.Widget)
-
-	codeText := "Code"
-	codeLabel := gtklib.NewLabel(&codeText)
-	formContent.Append(&codeLabel.Widget)
-	codeEntry = gtklib.NewEntry()
-	codeEntry.SetText(editable.CardCode)
-	codeEntry.SetVisibility(false)
-	formContent.Append(&codeEntry.Widget)
-	return
-}
-
-// renderIdentityFormFields renders identity-specific fields (FirstName, LastName, Email,
-// Phone, Username, SSN, PassportNumber, LicenseNumber) into formContent and returns
-// the created entry pointers.
-func (v *View) renderIdentityFormFields(formContent *gtklib.Box, editable EditableItem) (fnEntry, lnEntry, emailEntry, phoneEntry, idUserEntry, ssnEntry, passportEntry, licenseEntry *gtklib.Entry) {
-	fnText := "First name"
-	fnLabel := gtklib.NewLabel(&fnText)
-	formContent.Append(&fnLabel.Widget)
-	fnEntry = gtklib.NewEntry()
-	fnEntry.SetText(editable.IdentityFirstName)
-	formContent.Append(&fnEntry.Widget)
-
-	lnText := "Last name"
-	lnLabel := gtklib.NewLabel(&lnText)
-	formContent.Append(&lnLabel.Widget)
-	lnEntry = gtklib.NewEntry()
-	lnEntry.SetText(editable.IdentityLastName)
-	formContent.Append(&lnEntry.Widget)
-
-	emailText := "Email"
-	emailLabel := gtklib.NewLabel(&emailText)
-	formContent.Append(&emailLabel.Widget)
-	emailEntry = gtklib.NewEntry()
-	emailEntry.SetText(editable.IdentityEmail)
-	formContent.Append(&emailEntry.Widget)
-
-	phoneText := "Phone"
-	phoneLabel := gtklib.NewLabel(&phoneText)
-	formContent.Append(&phoneLabel.Widget)
-	phoneEntry = gtklib.NewEntry()
-	phoneEntry.SetText(editable.IdentityPhone)
-	formContent.Append(&phoneEntry.Widget)
-
-	idUserText := "Username"
-	idUserLabel := gtklib.NewLabel(&idUserText)
-	formContent.Append(&idUserLabel.Widget)
-	idUserEntry = gtklib.NewEntry()
-	idUserEntry.SetText(editable.IdentityUsername)
-	formContent.Append(&idUserEntry.Widget)
-
-	ssnText := "SSN"
-	ssnLabel := gtklib.NewLabel(&ssnText)
-	formContent.Append(&ssnLabel.Widget)
-	ssnEntry = gtklib.NewEntry()
-	ssnEntry.SetText(editable.IdentitySSN)
-	ssnEntry.SetVisibility(false)
-	formContent.Append(&ssnEntry.Widget)
-
-	passportText := "Passport number"
-	passportLabel := gtklib.NewLabel(&passportText)
-	formContent.Append(&passportLabel.Widget)
-	passportEntry = gtklib.NewEntry()
-	passportEntry.SetText(editable.IdentityPassportNumber)
-	passportEntry.SetVisibility(false)
-	formContent.Append(&passportEntry.Widget)
-
-	licenseText := "License number"
-	licenseLabel := gtklib.NewLabel(&licenseText)
-	formContent.Append(&licenseLabel.Widget)
-	licenseEntry = gtklib.NewEntry()
-	licenseEntry.SetText(editable.IdentityLicenseNumber)
-	licenseEntry.SetVisibility(false)
-	formContent.Append(&licenseEntry.Widget)
-	return
-}
-
 // renderStatus updates the status label.
 func (v *View) renderStatus() {
-	text := v.state.Status.Text
+	text := v.ctrl.State.Status.Text
 	v.statusLabel.SetText(text)
 	v.statusBox.SetVisible(true)
 }
 
-// eventLoop listens for service events and updates status.
+// eventLoop forwards service events to the controller on the GTK main loop.
 func (v *View) eventLoop(ctx context.Context) {
 	eventCh := v.service.Events()
 	for {
@@ -2244,69 +1454,12 @@ func (v *View) eventLoop(ctx context.Context) {
 			if !ok {
 				return
 			}
-			st := StatusFromEvent(evt)
-			refreshRows := ShouldRefreshRowsOnEvent(evt.Kind)
-			refreshDelay := refreshRowsDelayForEvent(evt.Kind)
 			idleAddOnce(func() {
-				v.mu.Lock()
-				v.statusVersion++
-				statusVersion := v.statusVersion
-				if v.syncStatusTimer != nil {
-					v.syncStatusTimer.Stop()
-					v.syncStatusTimer = nil
-				}
-				v.state.SetStatus(st)
-				mode := v.state.Mode
-				v.mu.Unlock()
-				v.renderStatus()
-				// This idle callback runs on the GTK main thread. Snapshotting Mode
-				// before releasing v.mu avoids holding the lock while refreshSearchRows
-				// reads GTK widgets and starts async service work.
-				if refreshRows && mode == ModeSearch {
-					if refreshDelay > 0 {
-						v.mu.Lock()
-						v.syncStatusTimer = time.AfterFunc(refreshDelay, func() {
-							if v.ctx.Err() != nil {
-								return
-							}
-							idleAddOnce(func() {
-								if v.ctx.Err() != nil {
-									return
-								}
-								v.mu.Lock()
-								if v.state.Mode != ModeSearch || v.statusVersion != statusVersion {
-									v.mu.Unlock()
-									return
-								}
-								v.syncStatusTimer = nil
-								v.mu.Unlock()
-								v.refreshSearchRows()
-							})
-						})
-						v.mu.Unlock()
-						return
-					}
-					v.refreshSearchRows()
-				}
+				// The entry is the source of truth for the visible query and may
+				// only be read on the GTK thread.
+				query := v.searchEntry.GetText()
+				v.run(func(c *Controller) []Effect { return c.HandleEvent(evt, query) })
 			})
 		}
 	}
-}
-
-// refreshSearchRows reloads the visible search list after cache/index/sync
-// changes. It must be called on the GTK thread so reading searchEntry is safe.
-func (v *View) refreshSearchRows() {
-	v.mu.Lock()
-	if v.state.Mode != ModeSearch {
-		v.mu.Unlock()
-		return
-	}
-	v.mu.Unlock()
-
-	query := v.searchEntry.GetText()
-	if query == "" {
-		v.loadAllItems()
-		return
-	}
-	v.doSearch(query)
 }
