@@ -1,110 +1,73 @@
-// Package clipboard provides a TTL-based clipboard adapter implementing out.Clipboard.
+// Package clipboard implements out.Clipboard. It owns the whole clipboard
+// policy: copies are handed to a detached helper process of this same binary,
+// which keeps the clipboard selection alive after the overlay exits and
+// releases it when the TTL expires. This package defines both sides of the
+// parent/helper protocol (see helper_protocol.go).
 package clipboard
 
 import (
 	"context"
 	"errors"
-	"sync"
+	"fmt"
+	"os"
 	"time"
 
 	"github.com/bnema/gtkls-bitwarden-client/internal/ports/out"
 )
 
+// ErrClipboardUnavailable reports that no clipboard backend is available.
 var ErrClipboardUnavailable = errors.New("clipboard: no clipboard backend available")
 
-// Setter is a function that sets the clipboard text.
-type Setter func(string) error
-
-// Clearer is a function that clears the clipboard.
-type Clearer func() error
-
-// Adapter implements out.Clipboard with optional TTL-based auto-clear.
-type Adapter struct {
-	mu      sync.Mutex
-	setter  Setter
-	clearer Clearer
-	timer   *time.Timer
-	value   string
-	gen     uint64
+// HelperClipboard implements out.Clipboard by delegating to a helper process.
+// Clipboard contents are sent to the helper on stdin only; argv/env carry
+// non-secret process configuration.
+type HelperClipboard struct {
+	executable func() (string, error)
+	runner     helperRunner
+	tools      systemTools
 }
 
-// New returns a new Adapter. If set or clear is nil, safe in-memory defaults
-// are used so that tests and headless environments work without a real clipboard.
-func New(set Setter, clear Clearer) *Adapter {
-	if set == nil {
-		set = func(s string) error { return nil }
+// NewHelperClipboard returns a clipboard backed by a re-executed helper process.
+func NewHelperClipboard() *HelperClipboard {
+	return &HelperClipboard{
+		executable: os.Executable,
+		runner:     processHelperRunner{},
+		tools:      newSystemTools(),
 	}
-	if clear == nil {
-		clear = func() error { return nil }
-	}
-	return &Adapter{setter: set, clearer: clear}
 }
 
-// Set writes text to the clipboard and, if ttl > 0, schedules a Clear after
-// ttl. Any previously scheduled timer is cancelled. Respects ctx before setting.
-func (a *Adapter) Set(ctx context.Context, text string, ttl time.Duration) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-	}
-
-	// Cancel any previous clear timer and advance the generation. Stop alone is
-	// not sufficient once a timer callback has fired and is waiting on a.mu; the
-	// generation check prevents that stale callback from clearing newer content.
-	if a.timer != nil {
-		a.timer.Stop()
-		a.timer = nil
-	}
-	a.gen++
-	generation := a.gen
-
-	if err := a.setter(text); err != nil {
+// Set copies text through the helper process, which serves it for ttl (0 means
+// until another client takes the selection). The input string is owned by the
+// caller and cannot be zeroed here; this method only zeroes the temporary byte
+// copy used to feed helper stdin.
+func (c *HelperClipboard) Set(ctx context.Context, text string, ttl time.Duration) error {
+	req := HelperRequest{Secret: []byte(text), TTL: ttl}
+	defer clear(req.Secret)
+	if err := req.validate(); err != nil {
 		return err
 	}
-
-	a.value = text
-
-	if ttl > 0 {
-		a.timer = time.AfterFunc(ttl, func() {
-			a.mu.Lock()
-			defer a.mu.Unlock()
-			if generation != a.gen {
-				return
-			}
-			_ = a.clearer()
-			a.value = ""
-			a.timer = nil
-		})
+	executable := c.executable
+	if executable == nil {
+		executable = os.Executable
 	}
-
-	return nil
+	path, err := executable()
+	if err != nil {
+		return fmt.Errorf("clipboard: resolve helper executable: %w", err)
+	}
+	runner := c.runner
+	if runner == nil {
+		runner = processHelperRunner{}
+	}
+	return runner.Run(ctx, helperCommand{name: path, args: req.Args()}, req.Stdin())
 }
 
-// Clear cancels any pending timer and clears the clipboard. It respects context
-// cancellation: if ctx is already done the operation is skipped.
-func (a *Adapter) Clear(ctx context.Context) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
+// Clear empties the system clipboard.
+func (c *HelperClipboard) Clear(ctx context.Context) error {
+	tools := c.tools
+	if tools.lookPath == nil && tools.getenv == nil {
+		tools = newSystemTools()
 	}
-
-	if a.timer != nil {
-		a.timer.Stop()
-		a.timer = nil
-	}
-	a.gen++
-
-	a.value = ""
-	return a.clearer()
+	return tools.write(ctx, nil)
 }
 
-// compile-time check
-var _ out.Clipboard = (*Adapter)(nil)
+var _ out.Clipboard = (*HelperClipboard)(nil)
