@@ -52,10 +52,19 @@ type Service struct {
 
 	// cachePatches are cache-only mutations not yet written to the encrypted
 	// cache, in order. Unlike full snapshots they are deltas, so a save may
-	// never be skipped as stale; whichever save runs next applies all of them.
-	// Guarded by mu.
-	cachePatches []func(*decryptedCacheSnapshot)
+	// never be skipped as stale; whichever save of the same session runs next
+	// applies all of that session's patches. Guarded by mu.
+	cachePatches []cachePatch
 
 	pendingRemoteItems   []vault.Item
 	pendingRemoteFolders []vault.Folder
+}
+
+// cachePatch is a queued cache-only change to the encrypted cache. It is bound
+// to the session (lifecycle token) that queued it, because it is flushed with
+// that session's key: a flush from an earlier, since locked session must
+// neither apply nor consume a later session's patches.
+type cachePatch struct {
+	lifecycle uint64
+	apply     func(*decryptedCacheSnapshot)
 }

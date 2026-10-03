@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/auth"
 	cerrors "github.com/bnema/gtkls-bitwarden-client/internal/core/errors"
 	coresync "github.com/bnema/gtkls-bitwarden-client/internal/core/sync"
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
@@ -627,4 +628,43 @@ func TestResidentBackToBackSyncedMutationsAreBothPersisted(t *testing.T) {
 	require.True(t, byID["item-1"].Deleted, "later synced trash must be persisted")
 	require.Contains(t, byID, "item-2")
 	require.Contains(t, byID, "item-3")
+}
+
+// TestCacheOnlyPatchesAreBoundToTheirSession: a flush belongs to the session
+// (lifecycle) that queued it and is run with that session's key. It must take
+// only its own session's patches and leave a later session's queued.
+func TestCacheOnlyPatchesAreBoundToTheirSession(t *testing.T) {
+	remote := &fakeRemote{trashErr: errRemoteDown, createErr: errRemoteDown}
+	f := sessionFixture{items: mutationBase(), remote: remote}
+	svc := f.service(t, sessionCacheOnly)
+
+	svc.cacheSaveMu.Lock() // park every flush
+	require.NoError(t, svc.Trash(context.Background(), "item-1"))
+	svc.mu.Lock()
+	oldSession := svc.lifecycle
+	svc.mu.Unlock()
+	require.NoError(t, svc.SoftLock(context.Background()))
+
+	svc.mu.Lock()
+	svc.state = auth.LockStateUnlocked
+	svc.cacheKey = []byte("another-cache-key-32-bytes-long!")
+	svc.sessionMode = sessionCacheOnly
+	svc.mu.Unlock()
+	_, err := svc.Create(context.Background(), vault.Item{Name: "NewSession"})
+	require.NoError(t, err)
+
+	svc.mu.Lock()
+	newSession := svc.lifecycle
+	require.NotEqual(t, oldSession, newSession)
+	require.Len(t, svc.cachePatches, 2)
+
+	taken := svc.takeCachePatchesLocked(oldSession)
+	require.Len(t, taken, 1, "the old session's flush takes only its own patch")
+	require.Equal(t, oldSession, taken[0].lifecycle)
+	require.Len(t, svc.cachePatches, 1)
+	require.Equal(t, newSession, svc.cachePatches[0].lifecycle, "the new session's patch stays queued")
+	svc.mu.Unlock()
+
+	svc.cacheSaveMu.Unlock()
+	svc.saveWG.Wait()
 }

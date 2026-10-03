@@ -1179,6 +1179,7 @@ func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutate func(
 	s.saveSeq++
 	seq := s.saveSeq
 	cacheOnly := s.sessionMode.cacheOnly()
+	lifecycle := s.lifecycle
 	key := make([]byte, len(s.cacheKey))
 	copy(key, s.cacheKey)
 	salt := make([]byte, len(s.cacheSalt))
@@ -1200,7 +1201,7 @@ func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutate func(
 	// A cache-only session persists its outbox from the cache contents below.
 	outboxFromCache := cacheOnly && mutate != nil
 	if outboxFromCache {
-		s.cachePatches = append(s.cachePatches, mutate)
+		s.cachePatches = append(s.cachePatches, cachePatch{lifecycle: lifecycle, apply: mutate})
 	}
 
 	s.saveWG.Go(func() {
@@ -1219,9 +1220,9 @@ func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutate func(
 		// save that finds the queue empty has nothing left to do.
 		s.mu.Lock()
 		stale := seq != s.saveSeq
-		var patches []func(*decryptedCacheSnapshot)
+		var patches []cachePatch
 		if outboxFromCache {
-			patches, s.cachePatches = s.cachePatches, nil
+			patches = s.takeCachePatchesLocked(lifecycle)
 			stale = len(patches) == 0
 		}
 		s.mu.Unlock()
@@ -1296,13 +1297,30 @@ func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutate func(
 	})
 }
 
+// takeCachePatchesLocked removes and returns the queued patches of the given
+// session, in order, leaving other sessions' patches queued. The caller MUST
+// hold s.mu.
+func (s *Service) takeCachePatchesLocked(lifecycle uint64) []cachePatch {
+	var mine []cachePatch
+	kept := s.cachePatches[:0]
+	for _, p := range s.cachePatches {
+		if p.lifecycle == lifecycle {
+			mine = append(mine, p)
+		} else {
+			kept = append(kept, p)
+		}
+	}
+	s.cachePatches = kept
+	return mine
+}
+
 // applyCachePatches applies queued cache-only patches in order. A patch that
 // was already persisted by an earlier failed flush (see recoverCachePatches)
 // may run again, so the outbox is deduplicated by mutation ID afterwards; the
 // item effects of every kind are idempotent.
-func applyCachePatches(data *decryptedCacheSnapshot, patches []func(*decryptedCacheSnapshot)) {
+func applyCachePatches(data *decryptedCacheSnapshot, patches []cachePatch) {
 	for _, patch := range patches {
-		patch(data)
+		patch.apply(data)
 	}
 	data.Outbox = dedupeOutboxMutations(data.Outbox)
 }
@@ -1314,7 +1332,7 @@ func applyCachePatches(data *decryptedCacheSnapshot, patches []func(*decryptedCa
 // item cache. If that store cannot be read either, nothing is written (a
 // partial outbox would overwrite queued mutations) and the queue is the only
 // copy until the next flush.
-func (s *Service) recoverCachePatches(ctx context.Context, vc vaultCache, key []byte, patches []func(*decryptedCacheSnapshot)) {
+func (s *Service) recoverCachePatches(ctx context.Context, vc vaultCache, key []byte, patches []cachePatch) {
 	s.mu.Lock()
 	s.cachePatches = append(patches, s.cachePatches...)
 	s.mu.Unlock()
