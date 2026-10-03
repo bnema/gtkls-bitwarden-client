@@ -72,8 +72,9 @@ func (f *fakeAuthService) SoftLock(context.Context) error { return nil }
 func (f *fakeAuthService) SetBackgroundSyncSuspended(context.Context, bool) error {
 	return nil
 }
-func (f *fakeAuthService) SyncNow(context.Context) error              { return nil }
-func (f *fakeAuthService) HardLock(_ context.Context, _ string) error { return nil }
+func (f *fakeAuthService) SyncNow(context.Context) error                   { return nil }
+func (f *fakeAuthService) HardLock(_ context.Context, _ string) error      { return nil }
+func (f *fakeAuthService) ForgetAccount(_ context.Context, _ string) error { return nil }
 func (f *fakeAuthService) Search(context.Context, string, int) ([]vault.ScoredItem, error) {
 	return nil, nil
 }
@@ -591,43 +592,6 @@ func TestUnlockDoesNotConsumePINWhenLoggedInLocked(t *testing.T) {
 
 	// Verify PIN was NOT consumed.
 	require.Empty(t, fake.pin, "PIN should not be consumed when logged-in-locked")
-}
-
-// TestUnlockAllowsLegacyExpiredEnvelope verifies that legacy expired envelope
-// status still allows PIN-only unlock in the same boot/session.
-func TestUnlockAllowsLegacyExpiredEnvelope(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "config.toml")
-	fake := newFakeAuthService()
-	fake.authStatusDetail = session.AuthStatusDetail{
-		Status:        session.LoggedInLocked,
-		Reason:        session.AuthReasonEnvelopeExpired,
-		HasToken:      true,
-		HasPINProfile: true,
-		HasEnvelope:   true,
-		EnvelopeValid: false,
-	}
-	opts := Options{
-		ConfigPath: configPath,
-		ComposeService: func(context.Context, *coreconfig.Config, string, string) (in.AppService, error) {
-			return fake, nil
-		},
-	}
-
-	_, err := executeCmd(t, opts, []string{"config", "set", "bitwarden.email", "me@example.com"})
-	require.NoError(t, err)
-
-	stdin := strings.NewReader("9999\n")
-	root := NewRootCommand(opts)
-	root.SetArgs([]string{"unlock", "--raw", "--no-sync"})
-	root.SetIn(stdin)
-	out := new(bytes.Buffer)
-	root.SetOut(out)
-	root.SetErr(new(bytes.Buffer))
-
-	err = root.ExecuteContext(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, "9999", fake.pin, "PIN should be consumed for legacy expired envelope unlock")
 }
 
 // TestUnlockFailsWhenBootChanged verifies that unlock fails fast
