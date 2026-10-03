@@ -601,3 +601,30 @@ func TestCacheOnlyMutationSurvivesUnreadableCache(t *testing.T) {
 	require.Empty(t, svc.cachePatches)
 	svc.mu.Unlock()
 }
+
+// TestResidentBackToBackSyncedMutationsAreBothPersisted holds the cache writer
+// so two remote-confirmed mutations are queued before either save runs. The
+// older save is skipped as stale, so the newer one must carry both.
+func TestResidentBackToBackSyncedMutationsAreBothPersisted(t *testing.T) {
+	remote := &fakeRemote{createItem: vault.Item{ID: "remote-new", Name: "New", Type: vault.ItemTypeLogin}}
+	svc := newMutationService(t, sessionResident, remote)
+
+	svc.cacheSaveMu.Lock()
+	_, err := svc.Create(context.Background(), vault.Item{Name: "New"})
+	require.NoError(t, err)
+	require.NoError(t, svc.Trash(context.Background(), "item-1"))
+	svc.cacheSaveMu.Unlock()
+	svc.saveWG.Wait()
+
+	// Read the encrypted cache itself, not the resident state.
+	snap, err := svc.vaultCache().Open(context.Background(), svc.cacheKey)
+	require.NoError(t, err)
+	byID := map[string]vault.Item{}
+	for _, it := range snap.Items {
+		byID[it.ID] = it
+	}
+	require.Contains(t, byID, "remote-new", "earlier synced create must not be lost")
+	require.True(t, byID["item-1"].Deleted, "later synced trash must be persisted")
+	require.Contains(t, byID, "item-2")
+	require.Contains(t, byID, "item-3")
+}
