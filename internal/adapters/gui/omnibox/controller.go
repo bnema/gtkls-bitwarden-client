@@ -281,10 +281,11 @@ func (c *Controller) ApplyCopy(res CopyResult) []Effect {
 	return effects
 }
 
-// ApplyDetail shows a loaded detail. A result arriving after the user left the
-// detail panel is dropped.
+// ApplyDetail shows a loaded detail. A result is dropped unless the detail
+// panel is open for the same row it was requested for, so a slow load for one
+// row cannot overwrite the detail or edit target of another.
 func (c *Controller) ApplyDetail(res DetailResult) []Effect {
-	if c.State.Mode != ModeDetail {
+	if !c.detailOpenFor(res.RowID) {
 		return nil
 	}
 	if res.Failed {
@@ -297,18 +298,31 @@ func (c *Controller) ApplyDetail(res DetailResult) []Effect {
 	return []Effect{EffectRenderDetail{Detail: res.Detail}}
 }
 
+func (c *Controller) detailOpenFor(id string) bool {
+	return c.State.Mode == ModeDetail && c.State.DetailID == id
+}
+
 // Mutate trashes, restores, or permanently deletes an item from its detail.
 func (c *Controller) Mutate(kind MutationKind, id string) []Effect {
 	return []Effect{EffectMutateItem{Request: MutationRequest{Kind: kind, ID: id}}}
 }
 
-// ApplyMutation returns to the previous mode after a successful mutation.
-func (c *Controller) ApplyMutation(res MutationResult) []Effect {
+// ApplyMutation applies the outcome of a trash/restore/delete. A failure is
+// shown in the status line (the unlock-panel error label is hidden in detail
+// mode). On success the detail panel of that item closes through Back, which
+// reapplies the mode's sync suspension, and the list is reloaded for query so
+// the item's new state shows. If the user already moved on, only the list is
+// reloaded.
+func (c *Controller) ApplyMutation(res MutationResult, query string) []Effect {
 	if res.Failed {
-		return []Effect{EffectShowError{Text: genericOperationError}}
+		c.State.SetStatus(errorStatus(genericOperationError))
+		return []Effect{EffectRenderStatus{}}
 	}
-	c.State.Back()
-	return []Effect{EffectRender{}}
+	if !c.detailOpenFor(res.Request.ID) {
+		return c.refresh(query)
+	}
+	effects := c.Back()
+	return append(effects, c.fetchRows(query)...)
 }
 
 // ResolveConflict starts resolving a conflict: resolve, then sync.

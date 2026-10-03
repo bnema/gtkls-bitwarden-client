@@ -96,8 +96,10 @@ func EmptyRowsText(query string, status Status) string {
 
 // ShouldRefreshRowsOnEvent reports whether a backend event means the visible
 // search results may now be stale and should be reloaded from the service.
+// MutationPending is included because a queued local change (trash, restore,
+// edit) alters row state and badges before any sync happens.
 func ShouldRefreshRowsOnEvent(kind in.EventKind) bool {
-	return kind == in.IndexReady || kind == in.SyncUpdated || kind == in.ConflictDetected
+	return kind == in.IndexReady || kind == in.SyncUpdated || kind == in.ConflictDetected || kind == in.MutationPending
 }
 
 func refreshRowsDelayForEvent(kind in.EventKind) time.Duration {

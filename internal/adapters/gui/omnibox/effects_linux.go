@@ -40,8 +40,6 @@ func (v *View) perform(effects []Effect) {
 			v.renderStatus()
 		case EffectRenderDetail:
 			v.renderDetail(e.Detail)
-		case EffectShowError:
-			v.showError(e.Text)
 		case EffectFocusSearch:
 			v.searchEntry.GrabFocus()
 		case EffectSetSyncSuspended:
@@ -72,7 +70,10 @@ func (v *View) perform(effects []Effect) {
 		case EffectMutateItem:
 			go func() {
 				res := RunMutation(v.ctx, v.service, e.Request, v.reportError)
-				v.runIdle(func(c *Controller) []Effect { return c.ApplyMutation(res) })
+				idleAddOnce(func() {
+					query := v.searchEntry.GetText()
+					v.run(func(c *Controller) []Effect { return c.ApplyMutation(res, query) })
+				})
 			}()
 		case EffectResolveConflict:
 			go func() {
