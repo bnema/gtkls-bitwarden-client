@@ -1108,20 +1108,26 @@ func (s *Service) zeroCacheKeyLocked() {
 	}
 }
 
-// appendOutboxLocked appends a mutation to the outbox and returns it.
-// The caller must hold s.mu.
-func (s *Service) appendOutboxLocked(ctx context.Context, kind coresync.MutationKind, itemID string, payload []byte) coresync.OutboxMutation {
+// newOutboxMutationLocked builds an outbox mutation with a fresh ID. The
+// caller MUST hold s.mu and is responsible for queueing it.
+func (s *Service) newOutboxMutationLocked(kind coresync.MutationKind, itemID string, payload []byte) coresync.OutboxMutation {
 	s.outboxSeq++
-	m := coresync.OutboxMutation{
+	return coresync.OutboxMutation{
 		ID:        fmt.Sprintf("m-%d-%d", s.now().UnixNano(), s.outboxSeq),
 		Kind:      kind,
 		ItemID:    itemID,
 		CreatedAt: s.now(),
 		Payload:   payload,
 	}
+}
+
+// appendOutboxLocked appends a mutation to the resident outbox and persists
+// it. It is for resident sessions only; cache-only sessions queue through the
+// encrypted cache (see saveCacheMutationAsyncLocked). The caller must hold
+// s.mu.
+func (s *Service) appendOutboxLocked(ctx context.Context, m coresync.OutboxMutation) {
 	s.outbox = append(s.outbox, m)
 	s.saveCacheAsyncLocked(ctx)
-	return m
 }
 
 // removeReplayedOutboxLocked removes only the mutations that were replayed.
@@ -1149,21 +1155,25 @@ func (s *Service) saveCacheAsyncLocked(ctx context.Context) {
 	s.saveCacheSnapshotAsyncLocked(ctx, nil)
 }
 
-// saveCacheItemsAsyncLocked updates the encrypted cache from the current cache
+// saveCacheMutationAsyncLocked patches the encrypted cache from its current
 // contents rather than from resident s.items. This preserves PIN-unlocked
 // sessions, where resident plaintext intentionally stays empty/partial.
 // The caller MUST hold s.mu.
-func (s *Service) saveCacheItemsAsyncLocked(ctx context.Context, mutateItems func([]vault.Item) []vault.Item) {
-	s.saveCacheSnapshotAsyncLocked(ctx, mutateItems)
+func (s *Service) saveCacheMutationAsyncLocked(ctx context.Context, mutate func(*decryptedCacheSnapshot)) {
+	s.saveCacheSnapshotAsyncLocked(ctx, mutate)
 }
 
 // saveCacheSnapshotAsyncLocked snapshots the current key/outbox and persists
-// cache state asynchronously. If mutateItems is non-nil, items/folders are
-// loaded from the existing encrypted cache, mutated, and saved back; otherwise
-// resident s.items/s.folders are snapshotted. The caller MUST hold s.mu.
-func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutateItems func([]vault.Item) []vault.Item) {
+// cache state asynchronously. If mutate is non-nil, items/folders are loaded
+// from the existing encrypted cache and handed to mutate, then saved back;
+// otherwise resident s.items/s.folders are snapshotted. In a cache-only
+// session the outbox is loaded from the cache as well (the resident outbox is
+// empty there), so mutate also sees and extends the persisted outbox. The
+// caller MUST hold s.mu.
+func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutate func(*decryptedCacheSnapshot)) {
 	s.saveSeq++
 	seq := s.saveSeq
+	cacheOnly := s.sessionMode.cacheOnly()
 	key := make([]byte, len(s.cacheKey))
 	copy(key, s.cacheKey)
 	salt := make([]byte, len(s.cacheSalt))
@@ -1182,6 +1192,11 @@ func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutateItems 
 	if len(key) == 0 {
 		return
 	}
+	// A cache-only session persists its outbox from the cache contents below.
+	outboxFromCache := cacheOnly && mutate != nil
+	if outboxFromCache {
+		s.cachePatches = append(s.cachePatches, mutate)
+	}
 
 	s.saveWG.Go(func() {
 		defer clear(key)
@@ -1193,8 +1208,17 @@ func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutateItems 
 		// if a newer save was queued while this goroutine waited. The newer
 		// goroutine owns the durable write; Shutdown waits on saveWG, and each
 		// save has a bounded timeout, so skipping stale snapshots is intentional.
+		//
+		// Cache-only patches are deltas, not snapshots: they are never dropped.
+		// Whichever save runs first applies every queued patch in order, and a
+		// save that finds the queue empty has nothing left to do.
 		s.mu.Lock()
 		stale := seq != s.saveSeq
+		var patches []func(*decryptedCacheSnapshot)
+		if outboxFromCache {
+			patches, s.cachePatches = s.cachePatches, nil
+			stale = len(patches) == 0
+		}
 		s.mu.Unlock()
 		if stale {
 			return
@@ -1203,17 +1227,13 @@ func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutateItems 
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 
-		if vc.outbox != nil {
+		if vc.outbox != nil && !outboxFromCache {
 			// Persist the encrypted outbox independently of cache item patching. If
-			// mutateItems later cannot load the item cache, keeping outbox durable is
+			// mutate later cannot load the item cache, keeping outbox durable is
 			// still preferable to losing queued local mutations.
 			outboxLog, outboxStarted := logAppServiceStart(cleanupCtx, "save_outbox")
 			err := vc.SaveOutbox(cleanupCtx, key, outboxSnap)
 			logAppServiceFinishCount(outboxLog, outboxStarted, err, len(outboxSnap))
-		}
-
-		if !vc.Available() {
-			return
 		}
 
 		cacheLog, cacheStarted := logAppServiceStart(cleanupCtx, "save_cache")
@@ -1224,7 +1244,7 @@ func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutateItems 
 			Outbox:    outboxSnap,
 			Conflicts: conflictsSnap,
 		}
-		if mutateItems != nil {
+		if mutate != nil && (vc.Available() || outboxFromCache) {
 			loaded, loadErr := vc.Open(cleanupCtx, key)
 			if loadErr != nil {
 				cacheLog.Warn().
@@ -1236,10 +1256,29 @@ func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutateItems 
 			if len(data.Salt) == 0 {
 				data.Salt = loaded.Salt
 			}
-			data.Items = mutateItems(loaded.Items)
+			data.Items = loaded.Items
 			// Keep folders from the encrypted cache, not resident s.folders: PIN
 			// unlock sessions intentionally keep resident vault state empty.
 			data.Folders = loaded.Folders
+			if outboxFromCache {
+				data.Outbox = loaded.Outbox
+			}
+			if outboxFromCache {
+				for _, patch := range patches {
+					patch(&data)
+				}
+			} else {
+				mutate(&data)
+			}
+			if outboxFromCache {
+				outboxLog, outboxStarted := logAppServiceStart(cleanupCtx, "save_outbox")
+				err := vc.SaveOutbox(cleanupCtx, key, data.Outbox)
+				logAppServiceFinishCount(outboxLog, outboxStarted, err, len(data.Outbox))
+			}
+		}
+
+		if !vc.Available() {
+			return
 		}
 
 		err := vc.Save(cleanupCtx, key, accountHash, data)
@@ -1252,28 +1291,21 @@ func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutateItems 
 }
 
 func upsertVaultItem(items []vault.Item, item vault.Item) []vault.Item {
+	return upsertVaultItemAs(items, item.ID, item)
+}
+
+// upsertVaultItemAs returns a copy of items in which the entry with ID key is
+// replaced by item, or item is appended if no entry has that ID.
+func upsertVaultItemAs(items []vault.Item, key string, item vault.Item) []vault.Item {
 	out := make([]vault.Item, len(items), len(items)+1)
 	copy(out, items)
 	for i, existing := range out {
-		if existing.ID == item.ID {
+		if existing.ID == key {
 			out[i] = item
 			return out
 		}
 	}
 	return append(out, item)
-}
-
-func markVaultItemDeleted(items []vault.Item, id string, deleted bool) []vault.Item {
-	out := make([]vault.Item, len(items))
-	copy(out, items)
-	for i := range out {
-		if out[i].ID == id {
-			out[i].Deleted = deleted
-			out[i].SyncStatus = vault.SyncStatusSynced
-			return out
-		}
-	}
-	return out
 }
 
 func findConflictByID(conflicts []coresync.Conflict, id string) (coresync.Conflict, bool) {
@@ -1717,354 +1749,31 @@ func (s *Service) AuthStatusDetail(ctx context.Context, email string) (detail se
 
 // Create creates a new vault item. If remote is available, it tries to create
 // online first. On failure or offline, it queues a pending mutation.
-func (s *Service) Create(ctx context.Context, item vault.Item) (retItem vault.Item, retErr error) {
-	log, started := logAppServiceStart(ctx, "mutation_create")
-	defer func() {
-		count := 0
-		if retErr == nil && retItem.ID != "" {
-			count = 1
-		}
-		logAppServiceFinishCount(log, started, retErr, count)
-	}()
-
-	s.mu.Lock()
-	if err := s.ensureUnlocked(); err != nil {
-		s.mu.Unlock()
-		return vault.Item{}, err
-	}
-	s.mu.Unlock()
-
-	// Try remote if available.
-	if s.deps.Remote != nil {
-		remoteItem, err := s.deps.Remote.Create(ctx, item)
-		if err == nil {
-			s.mu.Lock()
-			if err := s.ensureUnlocked(); err != nil {
-				s.mu.Unlock()
-				logRemoteSuccessLocalLocked(ctx, "remote_create_local_update")
-				return vault.Item{}, err
-			}
-			remoteItem.SyncStatus = vault.SyncStatusSynced
-			s.items = append(s.items, remoteItem)
-			s.rebuildIndexLocked()
-			s.saveCacheItemsAsyncLocked(ctx, func(items []vault.Item) []vault.Item {
-				return upsertVaultItem(items, remoteItem)
-			})
-			s.mu.Unlock()
-			s.emit(SyncUpdated, "item created remotely")
-			return remoteItem, nil
-		}
-	}
-
-	// Remote missing or error: queue pending locally.
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.ensureUnlocked(); err != nil {
-		return vault.Item{}, err
-	}
-
-	if item.ID == "" {
-		s.outboxSeq++
-		item.ID = fmt.Sprintf("local-%d-%d", s.now().UnixNano(), s.outboxSeq)
-	}
-	item.SyncStatus = vault.SyncStatusPending
-	item.RevisionDate = s.now()
-
-	payload, err := json.Marshal(item)
-	if err != nil {
-		return vault.Item{}, fmt.Errorf("app: marshal create payload: %w", err)
-	}
-	s.appendOutboxLocked(ctx, coresync.MutationCreate, item.ID, payload)
-
-	s.items = append(s.items, item)
-	s.rebuildIndexLocked()
-	s.emit(MutationPending, "item queued for creation")
-	return item, nil
+func (s *Service) Create(ctx context.Context, item vault.Item) (vault.Item, error) {
+	return s.applyMutation(ctx, createMutation, mutation{Item: item})
 }
 
 // Update updates an existing vault item. Tries remote first, falls back to
 // local pending mutation.
-func (s *Service) Update(ctx context.Context, id string, item vault.Item) (retItem vault.Item, retErr error) {
-	log, started := logAppServiceStart(ctx, "mutation_update")
-	defer func() {
-		count := 0
-		if retErr == nil && retItem.ID != "" {
-			count = 1
-		}
-		logAppServiceFinishCount(log, started, retErr, count)
-	}()
-
-	s.mu.Lock()
-	if err := s.ensureUnlocked(); err != nil {
-		s.mu.Unlock()
-		return vault.Item{}, err
-	}
-	s.mu.Unlock()
-
-	if s.deps.Remote != nil {
-		remoteItem, err := s.deps.Remote.Update(ctx, id, item)
-		if err == nil {
-			s.mu.Lock()
-			if err := s.ensureUnlocked(); err != nil {
-				s.mu.Unlock()
-				logRemoteSuccessLocalLocked(ctx, "remote_update_local_update")
-				return vault.Item{}, err
-			}
-			remoteItem.SyncStatus = vault.SyncStatusSynced
-			for i, existing := range s.items {
-				if existing.ID == id {
-					s.items[i] = remoteItem
-					break
-				}
-			}
-			s.rebuildIndexLocked()
-			s.saveCacheItemsAsyncLocked(ctx, func(items []vault.Item) []vault.Item {
-				return upsertVaultItem(items, remoteItem)
-			})
-			s.mu.Unlock()
-			s.emit(SyncUpdated, "item updated remotely")
-			return remoteItem, nil
-		}
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.ensureUnlocked(); err != nil {
-		return vault.Item{}, err
-	}
-
-	item.ID = id
-	item.SyncStatus = vault.SyncStatusPending
-	item.RevisionDate = s.now()
-
-	payload, err := json.Marshal(item)
-	if err != nil {
-		return vault.Item{}, fmt.Errorf("app: marshal update payload: %w", err)
-	}
-	s.appendOutboxLocked(ctx, coresync.MutationUpdate, id, payload)
-
-	found := false
-	for i, existing := range s.items {
-		if existing.ID == id {
-			s.items[i] = item
-			found = true
-			break
-		}
-	}
-	if !found {
-		s.items = append(s.items, item)
-	}
-	s.rebuildIndexLocked()
-	s.emit(MutationPending, "item queued for update")
-	return item, nil
+func (s *Service) Update(ctx context.Context, id string, item vault.Item) (vault.Item, error) {
+	return s.applyMutation(ctx, updateMutation, mutation{ID: id, Item: item})
 }
 
 // Trash moves an item to the trash. Tries remote first, falls back to local pending.
-func (s *Service) Trash(ctx context.Context, id string) (retErr error) {
-	log, started := logAppServiceStart(ctx, "mutation_trash")
-	defer func() {
-		count := 0
-		if retErr == nil {
-			count = 1
-		}
-		logAppServiceFinishCount(log, started, retErr, count)
-	}()
-
-	s.mu.Lock()
-	if err := s.ensureUnlocked(); err != nil {
-		s.mu.Unlock()
-		return err
-	}
-	s.mu.Unlock()
-
-	if s.deps.Remote != nil {
-		err := s.deps.Remote.Trash(ctx, id)
-		if err == nil {
-			s.mu.Lock()
-			if err := s.ensureUnlocked(); err != nil {
-				s.mu.Unlock()
-				logRemoteSuccessLocalLocked(ctx, "remote_trash_local_update")
-				return err
-			}
-			for i, existing := range s.items {
-				if existing.ID == id {
-					s.items[i].Deleted = true
-					s.items[i].SyncStatus = vault.SyncStatusSynced
-					break
-				}
-			}
-			s.rebuildIndexLocked()
-			s.saveCacheItemsAsyncLocked(ctx, func(items []vault.Item) []vault.Item {
-				return markVaultItemDeleted(items, id, true)
-			})
-			s.mu.Unlock()
-			s.emit(SyncUpdated, "item trashed remotely")
-			return nil
-		}
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.ensureUnlocked(); err != nil {
-		return err
-	}
-
-	payload, err := json.Marshal(map[string]string{"id": id})
-	if err != nil {
-		return fmt.Errorf("app: marshal trash payload: %w", err)
-	}
-	s.appendOutboxLocked(ctx, coresync.MutationTrash, id, payload)
-
-	for i, existing := range s.items {
-		if existing.ID == id {
-			s.items[i].Deleted = true
-			s.items[i].SyncStatus = vault.SyncStatusPending
-			break
-		}
-	}
-
-	s.rebuildIndexLocked()
-	s.emit(MutationPending, "item queued for trash")
-	return nil
+func (s *Service) Trash(ctx context.Context, id string) error {
+	_, err := s.applyMutation(ctx, trashMutation, mutation{ID: id})
+	return err
 }
 
 // Restore restores an item from the trash. Tries remote first, falls back to local pending.
-func (s *Service) Restore(ctx context.Context, id string) (retItem vault.Item, retErr error) {
-	log, started := logAppServiceStart(ctx, "mutation_restore")
-	defer func() {
-		count := 0
-		if retErr == nil && retItem.ID != "" {
-			count = 1
-		}
-		logAppServiceFinishCount(log, started, retErr, count)
-	}()
-
-	s.mu.Lock()
-	if err := s.ensureUnlocked(); err != nil {
-		s.mu.Unlock()
-		return vault.Item{}, err
-	}
-	s.mu.Unlock()
-
-	if s.deps.Remote != nil {
-		remoteItem, err := s.deps.Remote.Restore(ctx, id)
-		if err == nil {
-			s.mu.Lock()
-			if err := s.ensureUnlocked(); err != nil {
-				s.mu.Unlock()
-				logRemoteSuccessLocalLocked(ctx, "remote_restore_local_update")
-				return vault.Item{}, err
-			}
-			remoteItem.Deleted = false
-			remoteItem.SyncStatus = vault.SyncStatusSynced
-			for i, existing := range s.items {
-				if existing.ID == id {
-					s.items[i] = remoteItem
-					break
-				}
-			}
-			s.rebuildIndexLocked()
-			s.saveCacheItemsAsyncLocked(ctx, func(items []vault.Item) []vault.Item {
-				return upsertVaultItem(items, remoteItem)
-			})
-			s.mu.Unlock()
-			s.emit(SyncUpdated, "item restored remotely")
-			return remoteItem, nil
-		}
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.ensureUnlocked(); err != nil {
-		return vault.Item{}, err
-	}
-
-	payload, err := json.Marshal(map[string]string{"id": id})
-	if err != nil {
-		return vault.Item{}, fmt.Errorf("app: marshal restore payload: %w", err)
-	}
-	s.appendOutboxLocked(ctx, coresync.MutationRestore, id, payload)
-
-	var restored vault.Item
-	for i, existing := range s.items {
-		if existing.ID == id {
-			s.items[i].Deleted = false
-			s.items[i].SyncStatus = vault.SyncStatusPending
-			restored = s.items[i]
-			break
-		}
-	}
-
-	s.rebuildIndexLocked()
-	s.emit(MutationPending, "item queued for restore")
-	return restored, nil
+func (s *Service) Restore(ctx context.Context, id string) (vault.Item, error) {
+	return s.applyMutation(ctx, restoreMutation, mutation{ID: id})
 }
 
 // Delete permanently deletes a vault item. Tries remote first, falls back to local pending.
-func (s *Service) Delete(ctx context.Context, id string) (retErr error) {
-	log, started := logAppServiceStart(ctx, "mutation_delete")
-	defer func() {
-		count := 0
-		if retErr == nil {
-			count = 1
-		}
-		logAppServiceFinishCount(log, started, retErr, count)
-	}()
-
-	s.mu.Lock()
-	if err := s.ensureUnlocked(); err != nil {
-		s.mu.Unlock()
-		return err
-	}
-	s.mu.Unlock()
-
-	if s.deps.Remote != nil {
-		err := s.deps.Remote.Delete(ctx, id)
-		if err == nil {
-			s.mu.Lock()
-			if err := s.ensureUnlocked(); err != nil {
-				s.mu.Unlock()
-				logRemoteSuccessLocalLocked(ctx, "remote_delete_local_update")
-				return err
-			}
-			for i, existing := range s.items {
-				if existing.ID == id {
-					s.items = append(s.items[:i], s.items[i+1:]...)
-					break
-				}
-			}
-			s.rebuildIndexLocked()
-			s.saveCacheItemsAsyncLocked(ctx, func(items []vault.Item) []vault.Item {
-				return removeVaultItem(items, id)
-			})
-			s.mu.Unlock()
-			s.emit(SyncUpdated, "item deleted remotely")
-			return nil
-		}
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.ensureUnlocked(); err != nil {
-		return err
-	}
-
-	payload, err := json.Marshal(map[string]string{"id": id})
-	if err != nil {
-		return fmt.Errorf("app: marshal delete payload: %w", err)
-	}
-	s.appendOutboxLocked(ctx, coresync.MutationDelete, id, payload)
-
-	for i, existing := range s.items {
-		if existing.ID == id {
-			s.items = append(s.items[:i], s.items[i+1:]...)
-			break
-		}
-	}
-
-	s.rebuildIndexLocked()
-	s.emit(MutationPending, "item queued for deletion")
-	return nil
+func (s *Service) Delete(ctx context.Context, id string) error {
+	_, err := s.applyMutation(ctx, deleteMutation, mutation{ID: id})
+	return err
 }
 
 // ListAttachments is not yet supported.
@@ -2454,39 +2163,8 @@ func (s *Service) replayOutbox(ctx context.Context, outbox []coresync.OutboxMuta
 			return err
 		}
 
-		switch m.Kind {
-		case coresync.MutationCreate, coresync.MutationUpdate:
-			var item vault.Item
-			if err := json.Unmarshal(m.Payload, &item); err != nil {
-				return fmt.Errorf("replay unmarshal: %w", err)
-			}
-			var err error
-			if m.Kind == coresync.MutationCreate {
-				_, err = s.deps.Remote.Create(ctx, item)
-			} else {
-				_, err = s.deps.Remote.Update(ctx, m.ItemID, item)
-			}
-			if err != nil {
-				return fmt.Errorf("replay %s: %w", m.Kind, err)
-			}
-
-		case coresync.MutationTrash:
-			if err := s.deps.Remote.Trash(ctx, m.ItemID); err != nil {
-				return fmt.Errorf("replay trash: %w", err)
-			}
-
-		case coresync.MutationRestore:
-			if _, err := s.deps.Remote.Restore(ctx, m.ItemID); err != nil {
-				return fmt.Errorf("replay restore: %w", err)
-			}
-
-		case coresync.MutationDelete:
-			if err := s.deps.Remote.Delete(ctx, m.ItemID); err != nil {
-				return fmt.Errorf("replay delete: %w", err)
-			}
-
-		default:
-			return fmt.Errorf("%w: unknown mutation kind %s", cerrors.ErrUnsupported, m.Kind)
+		if err := s.replayMutation(ctx, m); err != nil {
+			return err
 		}
 	}
 
