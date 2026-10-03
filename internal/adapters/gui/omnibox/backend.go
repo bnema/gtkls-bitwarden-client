@@ -122,6 +122,9 @@ func FetchCopy(ctx context.Context, b Backend, clipboard out.Clipboard, req Copy
 
 // DetailResult is the outcome of FetchDetail.
 type DetailResult struct {
+	// RowID is the ID of the row the detail was requested for; the controller
+	// drops the result if another row's detail is open by the time it arrives.
+	RowID  string
 	Detail Detail
 	// Item, when non-nil, replaces the controller's current item (the target of
 	// Edit). A conflict placeholder resets it to the zero item.
@@ -133,6 +136,12 @@ type DetailResult struct {
 // conflict detail, falls back to the plain item, and finally to a conflict-only
 // placeholder so the conflict can still be resolved when nothing else loads.
 func FetchDetail(ctx context.Context, b Backend, row Row, report ErrorReporter) DetailResult {
+	res := fetchDetail(ctx, b, row, report)
+	res.RowID = row.ID
+	return res
+}
+
+func fetchDetail(ctx context.Context, b Backend, row Row, report ErrorReporter) DetailResult {
 	if row.ConflictID != "" {
 		conflictDetail, err := b.ConflictDetail(ctx, row.ConflictID)
 		if err == nil {

@@ -204,14 +204,6 @@ func New(ctx context.Context, service in.AppService, quit func(), retainFn func(
 	if email != "" {
 		detail, err := v.service.AuthStatusDetail(ctx, email)
 
-		// Fall back to simple AuthStatus if detail is not available.
-		if err != nil && detail.Status == "" {
-			status, statusErr := v.service.AuthStatus(ctx, email)
-			if statusErr == nil {
-				detail.Status = status
-			}
-		}
-
 		mode := ModeForAuthStatusDetail(detail, true)
 		v.mu.Lock()
 		v.ctrl.State.Mode = mode

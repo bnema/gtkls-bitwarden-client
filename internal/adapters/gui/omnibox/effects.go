@@ -29,9 +29,6 @@ type EffectRenderStatus struct{}
 // EffectRenderDetail asks for the detail panel to be rebuilt.
 type EffectRenderDetail struct{ Detail Detail }
 
-// EffectShowError sets the unlock-panel error label. Empty text hides it.
-type EffectShowError struct{ Text string }
-
 // EffectFocusSearch moves keyboard focus to the search entry.
 type EffectFocusSearch struct{}
 
@@ -104,7 +101,6 @@ func (EffectRenderTabs) isEffect()          {}
 func (EffectRenderRows) isEffect()          {}
 func (EffectRenderStatus) isEffect()        {}
 func (EffectRenderDetail) isEffect()        {}
-func (EffectShowError) isEffect()           {}
 func (EffectFocusSearch) isEffect()         {}
 func (EffectShowForm) isEffect()            {}
 func (EffectFormError) isEffect()           {}

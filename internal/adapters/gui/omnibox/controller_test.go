@@ -222,6 +222,7 @@ func TestController_HandleEvent(t *testing.T) {
 		{name: "conflict refreshes immediately", mode: ModeSearch, evt: in.Event{Kind: in.ConflictDetected, Count: 2}, wantStatus: "Conflict detected", wantFetch: true},
 		{name: "sync updated refreshes after settle delay", mode: ModeSearch, evt: in.Event{Kind: in.SyncUpdated}, wantStatus: "Vault synced", wantSchedule: syncUpdatedRefreshDelay},
 		{name: "refresh uses the typed query", mode: ModeSearch, evt: in.Event{Kind: in.IndexReady}, query: "git", wantStatus: "Search ready", wantFetch: true},
+		{name: "mutation pending refreshes the list", mode: ModeSearch, evt: in.Event{Kind: in.MutationPending, Count: 1}, wantStatus: "Saving…", wantFetch: true},
 		{name: "sync checking only sets status", mode: ModeSearch, evt: in.Event{Kind: in.SyncChecking}, wantStatus: "Checking for updates…"},
 		{name: "no refresh outside search mode", mode: ModeForm, evt: in.Event{Kind: in.IndexReady}, wantStatus: "Search ready"},
 		{name: "no delayed refresh outside search mode", mode: ModeDetail, evt: in.Event{Kind: in.SyncUpdated}, wantStatus: "Vault synced"},
@@ -406,51 +407,128 @@ func TestController_ApplyCopy(t *testing.T) {
 	}
 }
 
+func detailController(rowID string) *Controller {
+	c := NewController()
+	c.State.Mode = ModeDetail
+	c.State.DetailID = rowID
+	return c
+}
+
 func TestController_ApplyDetail(t *testing.T) {
 	t.Run("renders and remembers the item for edit", func(t *testing.T) {
-		c := NewController()
-		c.State.Mode = ModeDetail
+		c := detailController("i1")
 		item := vault.Item{ID: "i1", Name: "N", Type: vault.ItemTypeLogin}
-		effects := c.ApplyDetail(DetailResult{Detail: Detail{ID: "i1"}, Item: &item})
+		effects := c.ApplyDetail(DetailResult{RowID: "i1", Detail: Detail{ID: "i1"}, Item: &item})
 		require.Equal(t, "i1", only[EffectRenderDetail](t, effects).Detail.ID)
 		require.Equal(t, item, c.Item)
 	})
 	t.Run("conflict placeholder resets the item", func(t *testing.T) {
-		c := NewController()
-		c.State.Mode = ModeDetail
+		c := detailController("i1")
 		c.Item = vault.Item{ID: "stale"}
-		c.ApplyDetail(DetailResult{Detail: Detail{ConflictOnly: true}, Item: &vault.Item{}})
+		c.ApplyDetail(DetailResult{RowID: "i1", Detail: Detail{ConflictOnly: true}, Item: &vault.Item{}})
 		require.Equal(t, vault.Item{}, c.Item)
 	})
 	t.Run("failure sets the error", func(t *testing.T) {
-		c := NewController()
-		c.State.Mode = ModeDetail
-		effects := c.ApplyDetail(DetailResult{Failed: true})
+		c := detailController("i1")
+		effects := c.ApplyDetail(DetailResult{RowID: "i1", Failed: true})
 		require.Equal(t, genericOperationError, c.State.Error)
 		require.True(t, has[EffectRender](effects))
 		require.False(t, has[EffectRenderDetail](effects))
 	})
 	t.Run("late result after leaving detail is dropped", func(t *testing.T) {
 		c := searchController()
-		require.Empty(t, c.ApplyDetail(DetailResult{Detail: Detail{ID: "i1"}}))
+		require.Empty(t, c.ApplyDetail(DetailResult{RowID: "i1", Detail: Detail{ID: "i1"}}))
+	})
+	t.Run("slow result for row A cannot overwrite row B", func(t *testing.T) {
+		c := searchController()
+		c.State.SetRows([]Row{{ID: "A", Type: "login"}, {ID: "B", Type: "login"}})
+		cfg := config.Default()
+		cfg.Actions.DefaultPrimaryAction = config.ActionOpenDetail
+
+		c.Activate(false, false, cfg) // opens A
+		require.Equal(t, "A", c.State.DetailID)
+		c.Back() // user goes back and opens B before A's load finishes
+		c.State.SetRows([]Row{{ID: "B", Type: "login"}})
+		c.State.Selected = 0
+		c.Activate(false, false, cfg)
+		require.Equal(t, "B", c.State.DetailID)
+
+		itemB := vault.Item{ID: "B", Name: "Bee"}
+		require.NotEmpty(t, c.ApplyDetail(DetailResult{RowID: "B", Detail: Detail{ID: "B"}, Item: &itemB}))
+
+		itemA := vault.Item{ID: "A", Name: "Ay"}
+		require.Empty(t, c.ApplyDetail(DetailResult{RowID: "A", Detail: Detail{ID: "A"}, Item: &itemA}))
+		require.Equal(t, itemB, c.Item, "edit target stays B")
+	})
+	t.Run("slow failure for row A does not flag row B", func(t *testing.T) {
+		c := detailController("B")
+		require.Empty(t, c.ApplyDetail(DetailResult{RowID: "A", Failed: true}))
+		require.Empty(t, c.State.Error)
 	})
 }
 
+func TestFetchDetail_CarriesRowID(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		row     Row
+		backend *fakeBackend
+	}{
+		{"plain success", Row{ID: "i1"}, &fakeBackend{got: map[string]vault.Item{"i1": {ID: "i1"}}}},
+		{"plain failure", Row{ID: "i1"}, &fakeBackend{getErr: errBoom}},
+		{"conflict placeholder", Row{ID: "i1", ConflictID: "c"}, &fakeBackend{conflictDetailErr: errBoom, getErr: errBoom}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, "i1", FetchDetail(t.Context(), tt.backend, tt.row, nil).RowID)
+		})
+	}
+}
+
 func TestController_Mutations(t *testing.T) {
-	t.Run("success goes back and re-renders", func(t *testing.T) {
-		c := NewController()
-		c.State.Mode = ModeDetail
+	t.Run("success closes the detail through Back and reloads the list", func(t *testing.T) {
+		c := detailController("i1")
 		req := only[EffectMutateItem](t, c.Mutate(MutationTrash, "i1")).Request
-		effects := c.ApplyMutation(MutationResult{Request: req})
+		effects := c.ApplyMutation(MutationResult{Request: req}, "typed")
 		require.Equal(t, ModeSearch, c.State.Mode)
 		require.True(t, has[EffectRender](effects))
+		require.False(t, only[EffectSetSyncSuspended](t, effects).Suspended, "Back reapplies sync suspension")
+		require.Equal(t, "typed", only[EffectFetchRows](t, effects).Request.Query)
 	})
-	t.Run("failure stays and shows the error", func(t *testing.T) {
-		c := NewController()
-		c.State.Mode = ModeDetail
-		effects := c.ApplyMutation(MutationResult{Failed: true})
+	t.Run("success also drops any open form session", func(t *testing.T) {
+		c := detailController("i1")
+		c.Form = newFormSession(1, vault.Item{Type: vault.ItemTypeLogin})
+		c.ApplyMutation(MutationResult{Request: MutationRequest{Kind: MutationDelete, ID: "i1"}}, "")
+		require.Nil(t, c.Form)
+	})
+	t.Run("failure stays and shows the error in the status line", func(t *testing.T) {
+		c := detailController("i1")
+		effects := c.ApplyMutation(MutationResult{Request: MutationRequest{ID: "i1"}, Failed: true}, "")
 		require.Equal(t, ModeDetail, c.State.Mode)
-		require.Equal(t, genericOperationError, only[EffectShowError](t, effects).Text)
+		require.Equal(t, genericOperationError, c.State.Status.Text)
+		require.Equal(t, genericOperationError, c.State.Status.Error)
+		require.True(t, has[EffectRenderStatus](effects))
+	})
+	t.Run("stale success after moving to another item does not navigate", func(t *testing.T) {
+		c := detailController("B")
+		effects := c.ApplyMutation(MutationResult{Request: MutationRequest{Kind: MutationTrash, ID: "A"}}, "")
+		require.Equal(t, ModeDetail, c.State.Mode)
+		require.Equal(t, "B", c.State.DetailID)
+		require.False(t, has[EffectRender](effects))
+		require.False(t, has[EffectSetSyncSuspended](effects))
+	})
+	t.Run("stale success after leaving detail does not pop the current mode", func(t *testing.T) {
+		c := NewController()
+		c.State.Mode = ModeForm
+		c.Form = newFormSession(1, vault.Item{Type: vault.ItemTypeLogin})
+		effects := c.ApplyMutation(MutationResult{Request: MutationRequest{ID: "A"}}, "")
+		require.Equal(t, ModeForm, c.State.Mode)
+		require.NotNil(t, c.Form)
+		require.Empty(t, effects, "no list reload outside search mode")
+	})
+	t.Run("stale success in search mode only reloads the list", func(t *testing.T) {
+		c := searchController()
+		effects := c.ApplyMutation(MutationResult{Request: MutationRequest{ID: "A"}}, "q")
+		require.Equal(t, ModeSearch, c.State.Mode)
+		require.Equal(t, "q", only[EffectFetchRows](t, effects).Request.Query)
 	})
 }
 

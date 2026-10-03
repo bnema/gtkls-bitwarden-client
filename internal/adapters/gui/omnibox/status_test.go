@@ -156,6 +156,7 @@ func TestShouldRefreshRowsOnEvent(t *testing.T) {
 	require.True(t, ShouldRefreshRowsOnEvent(in.IndexReady))
 	require.True(t, ShouldRefreshRowsOnEvent(in.SyncUpdated))
 	require.True(t, ShouldRefreshRowsOnEvent(in.ConflictDetected))
+	require.True(t, ShouldRefreshRowsOnEvent(in.MutationPending))
 	require.False(t, ShouldRefreshRowsOnEvent(in.SyncChecking))
 	require.False(t, ShouldRefreshRowsOnEvent(in.SyncFailed))
 }

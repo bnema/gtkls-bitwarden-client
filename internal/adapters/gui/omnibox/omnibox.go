@@ -148,25 +148,6 @@ func (s *State) Back() {
 	}
 }
 
-// ModeForAuthStatus returns the appropriate initial mode given the auth status
-// and whether an email is configured. It is a pure function suitable for testing.
-func ModeForAuthStatus(status session.AuthStatus, hasEmail bool) Mode {
-	switch status {
-	case session.KeyringUnavailable:
-		return ModeKeyringError
-	case session.LoggedInUnlockAvailable:
-		if hasEmail {
-			return ModePINUnlock
-		}
-		return ModeUnlock
-	case session.LoggedInLocked:
-		return ModeUnlock
-	default:
-		// Unauthenticated or any other status.
-		return ModeUnlock
-	}
-}
-
 // ModeForAuthStatusDetail returns the appropriate initial mode given the
 // full auth status detail and whether an email is configured. It considers
 // PIN profile and envelope presence to distinguish between renewal (profile
