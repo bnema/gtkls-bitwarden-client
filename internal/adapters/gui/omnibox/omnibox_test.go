@@ -139,38 +139,6 @@ func TestSetStatus(t *testing.T) {
 	require.Equal(t, "Online", s.Status.Text)
 }
 
-func TestModeForAuthStatus_KeyringUnavailable(t *testing.T) {
-	mode := ModeForAuthStatus(session.KeyringUnavailable, true)
-	require.Equal(t, ModeKeyringError, mode)
-
-	mode = ModeForAuthStatus(session.KeyringUnavailable, false)
-	require.Equal(t, ModeKeyringError, mode)
-}
-
-func TestModeForAuthStatus_LoggedInUnlockAvailable(t *testing.T) {
-	mode := ModeForAuthStatus(session.LoggedInUnlockAvailable, true)
-	require.Equal(t, ModePINUnlock, mode)
-
-	mode = ModeForAuthStatus(session.LoggedInUnlockAvailable, false)
-	require.Equal(t, ModeUnlock, mode, "no email should fall back to ModeUnlock")
-}
-
-func TestModeForAuthStatus_LoggedInLocked(t *testing.T) {
-	mode := ModeForAuthStatus(session.LoggedInLocked, true)
-	require.Equal(t, ModeUnlock, mode)
-
-	mode = ModeForAuthStatus(session.LoggedInLocked, false)
-	require.Equal(t, ModeUnlock, mode)
-}
-
-func TestModeForAuthStatus_Unauthenticated(t *testing.T) {
-	mode := ModeForAuthStatus(session.Unauthenticated, true)
-	require.Equal(t, ModeUnlock, mode)
-
-	mode = ModeForAuthStatus(session.Unauthenticated, false)
-	require.Equal(t, ModeUnlock, mode)
-}
-
 func TestModeForAuthStatusDetail_KeyringUnavailable(t *testing.T) {
 	detail := session.AuthStatusDetail{Status: session.KeyringUnavailable}
 	mode := ModeForAuthStatusDetail(detail, true)
