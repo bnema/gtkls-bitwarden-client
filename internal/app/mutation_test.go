@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/bnema/gtkls-bitwarden-client/internal/core/auth"
 	cerrors "github.com/bnema/gtkls-bitwarden-client/internal/core/errors"
 	coresync "github.com/bnema/gtkls-bitwarden-client/internal/core/sync"
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
@@ -552,4 +553,118 @@ func TestMutationSpecsDependOnlyOnRemoteItems(t *testing.T) {
 		require.NoError(t, err, kind)
 	}
 	require.Equal(t, []string{"create", "update:item-1", "trash:item-1", "restore:item-1", "delete:item-1"}, r.calls)
+}
+
+// TestCacheOnlyMutationSurvivesUnreadableCache makes the encrypted cache
+// unreadable when an offline mutation is flushed. The queued outbox entry must
+// still become durable, and the whole mutation must be applied once the cache
+// can be read again, without duplicating the outbox entry.
+func TestCacheOnlyMutationSurvivesUnreadableCache(t *testing.T) {
+	existing := coresync.OutboxMutation{
+		ID: "m-existing", Kind: coresync.MutationUpdate, ItemID: "item-3",
+		Payload: []byte(`{"id":"item-3","name":"Three","type":"login"}`),
+	}
+	remote := &fakeRemote{createErr: errRemoteDown, trashErr: errRemoteDown}
+	f := sessionFixture{items: mutationBase(), remote: remote}
+	svc := f.service(t, sessionCacheOnly)
+	fc := svc.deps.Cache.(*fakeCache)
+	ob := &fakeOutbox{loadData: []coresync.OutboxMutation{existing}}
+	svc.deps.Outbox = ob
+
+	fc.mu.Lock()
+	fc.loadErr = errors.New("cache unreadable")
+	fc.mu.Unlock()
+	created, err := svc.Create(context.Background(), vault.Item{Name: "Offline"})
+	require.NoError(t, err)
+	svc.saveWG.Wait()
+
+	ob.mu.Lock()
+	require.Len(t, ob.saveData, 2, "queued entry must reach the outbox store even if the item cache is unreadable")
+	require.Equal(t, existing.ID, ob.saveData[0].ID)
+	require.Equal(t, created.ID, ob.saveData[1].ItemID)
+	ob.loadData = append([]coresync.OutboxMutation(nil), ob.saveData...)
+	ob.mu.Unlock()
+	svc.mu.Lock()
+	require.Len(t, svc.cachePatches, 1, "unflushed patch is kept for retry")
+	svc.mu.Unlock()
+
+	fc.mu.Lock()
+	fc.loadErr = nil
+	fc.mu.Unlock()
+	require.NoError(t, svc.Trash(context.Background(), "item-1"))
+
+	items, outbox := vaultState(t, svc)
+	require.Len(t, outbox, 3, "no duplicate outbox entries: existing, create, trash")
+	require.Equal(t, created.ID, outbox[1].ItemID)
+	require.Contains(t, items, created.ID, "retried create reaches the item cache")
+	require.True(t, items["item-1"].Deleted)
+	svc.mu.Lock()
+	require.Empty(t, svc.cachePatches)
+	svc.mu.Unlock()
+}
+
+// TestResidentBackToBackSyncedMutationsAreBothPersisted holds the cache writer
+// so two remote-confirmed mutations are queued before either save runs. The
+// older save is skipped as stale, so the newer one must carry both.
+func TestResidentBackToBackSyncedMutationsAreBothPersisted(t *testing.T) {
+	remote := &fakeRemote{createItem: vault.Item{ID: "remote-new", Name: "New", Type: vault.ItemTypeLogin}}
+	svc := newMutationService(t, sessionResident, remote)
+
+	svc.cacheSaveMu.Lock()
+	_, err := svc.Create(context.Background(), vault.Item{Name: "New"})
+	require.NoError(t, err)
+	require.NoError(t, svc.Trash(context.Background(), "item-1"))
+	svc.cacheSaveMu.Unlock()
+	svc.saveWG.Wait()
+
+	// Read the encrypted cache itself, not the resident state.
+	snap, err := svc.vaultCache().Open(context.Background(), svc.cacheKey)
+	require.NoError(t, err)
+	byID := map[string]vault.Item{}
+	for _, it := range snap.Items {
+		byID[it.ID] = it
+	}
+	require.Contains(t, byID, "remote-new", "earlier synced create must not be lost")
+	require.True(t, byID["item-1"].Deleted, "later synced trash must be persisted")
+	require.Contains(t, byID, "item-2")
+	require.Contains(t, byID, "item-3")
+}
+
+// TestCacheOnlyPatchesAreBoundToTheirSession: a flush belongs to the session
+// (lifecycle) that queued it and is run with that session's key. It must take
+// only its own session's patches and leave a later session's queued.
+func TestCacheOnlyPatchesAreBoundToTheirSession(t *testing.T) {
+	remote := &fakeRemote{trashErr: errRemoteDown, createErr: errRemoteDown}
+	f := sessionFixture{items: mutationBase(), remote: remote}
+	svc := f.service(t, sessionCacheOnly)
+
+	svc.cacheSaveMu.Lock() // park every flush
+	require.NoError(t, svc.Trash(context.Background(), "item-1"))
+	svc.mu.Lock()
+	oldSession := svc.lifecycle
+	svc.mu.Unlock()
+	require.NoError(t, svc.SoftLock(context.Background()))
+
+	svc.mu.Lock()
+	svc.state = auth.LockStateUnlocked
+	svc.cacheKey = []byte("another-cache-key-32-bytes-long!")
+	svc.sessionMode = sessionCacheOnly
+	svc.mu.Unlock()
+	_, err := svc.Create(context.Background(), vault.Item{Name: "NewSession"})
+	require.NoError(t, err)
+
+	svc.mu.Lock()
+	newSession := svc.lifecycle
+	require.NotEqual(t, oldSession, newSession)
+	require.Len(t, svc.cachePatches, 2)
+
+	taken := svc.takeCachePatchesLocked(oldSession)
+	require.Len(t, taken, 1, "the old session's flush takes only its own patch")
+	require.Equal(t, oldSession, taken[0].lifecycle)
+	require.Len(t, svc.cachePatches, 1)
+	require.Equal(t, newSession, svc.cachePatches[0].lifecycle, "the new session's patch stays queued")
+	svc.mu.Unlock()
+
+	svc.cacheSaveMu.Unlock()
+	svc.saveWG.Wait()
 }

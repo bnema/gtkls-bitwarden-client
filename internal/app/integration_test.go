@@ -194,7 +194,7 @@ func TestIntegrationRemoteRevisionEmptySkipsFullSync(t *testing.T) {
 	svc.mu.Unlock()
 
 	// No outbox, no items.
-	svc.syncOnce(context.Background())
+	require.NoError(t, svc.syncOnce(context.Background()))
 
 	// Sync should NOT have been called because revision is empty and outbox empty.
 	require.Equal(t, int32(0), fr.syncCalled.Load(), "Sync must not be called when revision is empty and no outbox")
@@ -224,7 +224,7 @@ func TestIntegrationRemoteChangedTriggersFullSync(t *testing.T) {
 	svc.state = auth.LockStateUnlocked
 	svc.mu.Unlock()
 
-	svc.syncOnce(context.Background())
+	require.NoError(t, svc.syncOnce(context.Background()))
 
 	// Sync should have been called.
 	require.Greater(t, fr.syncCalled.Load(), int32(0), "Sync must be called when revision is non-empty")
@@ -274,7 +274,7 @@ func TestIntegrationConflictKeepRemoteAndDuplicateLocal(t *testing.T) {
 		svc.mu.Unlock()
 
 		// Trigger sync — should detect conflict.
-		svc.syncOnce(context.Background())
+		require.NoError(t, svc.syncOnce(context.Background()))
 
 		conflicts := svc.conflictsForTest()
 		require.Len(t, conflicts, 1, "expected 1 conflict")
@@ -327,7 +327,7 @@ func TestIntegrationConflictKeepRemoteAndDuplicateLocal(t *testing.T) {
 		svc.mu.Unlock()
 
 		// Trigger sync.
-		svc.syncOnce(context.Background())
+		require.NoError(t, svc.syncOnce(context.Background()))
 
 		conflicts := svc.conflictsForTest()
 		require.Len(t, conflicts, 1, "expected 1 conflict")

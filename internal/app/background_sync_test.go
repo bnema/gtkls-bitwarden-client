@@ -221,7 +221,7 @@ func TestSyncOnceCacheOnlyRefreshesEncryptedCacheWithoutResidentState(t *testing
 	svc.backgroundSyncActive = true
 	svc.mu.Unlock()
 
-	svc.syncOnceCacheOnly(context.Background())
+	require.NoError(t, svc.syncOnceCacheOnly(context.Background()))
 
 	cached, err := svc.vaultCache().Open(context.Background(), cacheKey)
 	require.NoError(t, err)
@@ -308,7 +308,7 @@ func TestSyncOnceCacheOnlyMarksConflictsInEncryptedCache(t *testing.T) {
 	svc.backgroundSyncActive = true
 	svc.mu.Unlock()
 
-	svc.syncOnceCacheOnly(context.Background())
+	require.NoError(t, svc.syncOnceCacheOnly(context.Background()))
 
 	cached, err := svc.vaultCache().Open(context.Background(), cacheKey)
 	require.NoError(t, err)
@@ -373,7 +373,7 @@ func TestSyncOnceCacheOnlyReplaysOutboxBeforeClearingEncryptedCache(t *testing.T
 	svc.backgroundSyncActive = true
 	svc.mu.Unlock()
 
-	svc.syncOnceCacheOnly(context.Background())
+	require.NoError(t, svc.syncOnceCacheOnly(context.Background()))
 
 	cached, err := svc.vaultCache().Open(context.Background(), cacheKey)
 	require.NoError(t, err)

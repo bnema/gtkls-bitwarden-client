@@ -282,9 +282,19 @@ func (s *Service) commitSynced(ctx context.Context, spec *mutationSpec, m mutati
 	outcome := mutationOutcome{status: vault.SyncStatusSynced, remote: remoteItem}
 	result := s.applyResidentLocked(spec, m, outcome)
 	s.rebuildIndexLocked()
-	s.saveCacheMutationAsyncLocked(ctx, func(d *decryptedCacheSnapshot) {
-		d.Items, _ = spec.apply(d.Items, m, outcome)
-	})
+	if s.sessionMode.cacheOnly() {
+		s.saveCacheMutationAsyncLocked(ctx, func(d *decryptedCacheSnapshot) {
+			d.Items, _ = spec.apply(d.Items, m, outcome)
+		})
+	} else {
+		// Resident items are authoritative: unlock installs the whole cache
+		// into s.items and sync replaces both together, so the cache never
+		// holds more than s.items. Persist them as a full snapshot, which a
+		// newer snapshot may safely supersede (a queued patch would be
+		// skipped as stale instead). The offline path already persists this
+		// way through appendOutboxLocked.
+		s.saveCacheAsyncLocked(ctx)
+	}
 	s.mu.Unlock()
 	s.emit(SyncUpdated, spec.syncedMessage)
 	return result, nil
