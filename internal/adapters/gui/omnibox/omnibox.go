@@ -173,24 +173,26 @@ func ModeForAuthStatus(status session.AuthStatus, hasEmail bool) Mode {
 // exists, only master password needed) and fresh setup (no profile, master
 // password + new PIN required).
 func ModeForAuthStatusDetail(detail session.AuthStatusDetail, hasEmail bool) Mode {
-	switch detail.Status {
-	case session.KeyringUnavailable:
+	switch detail.NextStep() {
+	case session.UnlockStepFixKeyring:
 		return ModeKeyringError
-	case session.LoggedInUnlockAvailable:
+	case session.UnlockStepPIN:
 		if hasEmail {
 			return ModePINUnlock
 		}
 		return ModeUnlock
-	case session.LoggedInLocked:
-		if detail.HasPINProfile && detail.HasEnvelope && detail.Reason == session.AuthReasonEnvelopeExpired {
-			return ModePINUnlock
-		}
+	case session.UnlockStepRenewEnvelope:
+		return ModePINRenew
+	case session.UnlockStepSetupPIN:
+		return ModePINSetup
+	case session.UnlockStepWait:
+		// During PIN backoff the overlay offers the master-password recovery
+		// form matching the stored PIN profile state.
 		if detail.HasPINProfile {
 			return ModePINRenew
 		}
 		return ModePINSetup
 	default:
-		// Unauthenticated or any other status.
 		return ModeUnlock
 	}
 }

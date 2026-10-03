@@ -17,6 +17,7 @@ import (
 	coreconfig "github.com/bnema/gtkls-bitwarden-client/internal/core/config"
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/session"
 	"github.com/bnema/gtkls-bitwarden-client/internal/ports/in"
+	"github.com/bnema/gtkls-bitwarden-client/internal/ports/out"
 )
 
 // executeCmd runs the root command with the given args and returns stdout/stderr.
@@ -512,6 +513,15 @@ func (f *fakeCredentialStore) DeletePINProfile(context.Context, session.AccountR
 	return f.delPINProfileErr
 }
 
+// composeWithCredentials returns a ComposeService hook that builds the real
+// application service over the given credential store, so lock/logout tests
+// exercise the app-layer operations without touching the OS keyring.
+func composeWithCredentials(store out.CredentialStore) func(context.Context, *coreconfig.Config, string, string) (in.AppService, error) {
+	return func(_ context.Context, cfg *coreconfig.Config, _, _ string) (in.AppService, error) {
+		return app.NewService(app.Deps{Config: cfg, Credentials: store}), nil
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Lock tests
 // ---------------------------------------------------------------------------
@@ -526,9 +536,9 @@ func TestLockDefaultSoftDoesNotDeleteEnvelope(t *testing.T) {
 	require.NoError(t, err)
 
 	fakeStore := &fakeCredentialStore{}
-	opts.CredentialStore = fakeStore
+	opts.ComposeService = composeWithCredentials(fakeStore)
 
-	cmd := newLockCmd(opts)
+	cmd := newLockCmd(opts, filepath.Join(dir, "cache.json"), filepath.Join(dir, "outbox.json"))
 	cmd.SetArgs([]string{})
 	buf := new(bytes.Buffer)
 	cmd.SetOut(buf)
@@ -557,9 +567,9 @@ func TestLockHardDeletesUnlockEnvelopeOnly(t *testing.T) {
 	require.NoError(t, err)
 
 	fakeStore := &fakeCredentialStore{}
-	opts.CredentialStore = fakeStore
+	opts.ComposeService = composeWithCredentials(fakeStore)
 
-	cmd := newLockCmd(opts)
+	cmd := newLockCmd(opts, filepath.Join(dir, "cache.json"), filepath.Join(dir, "outbox.json"))
 	cmd.SetArgs([]string{"--hard"})
 	buf := new(bytes.Buffer)
 	cmd.SetOut(buf)
@@ -583,9 +593,9 @@ func TestLockNoEmailPrintsAlreadyLocked(t *testing.T) {
 	configPath := filepath.Join(dir, "config.toml")
 
 	fakeStore := &fakeCredentialStore{}
-	opts := Options{ConfigPath: configPath, CredentialStore: fakeStore}
+	opts := Options{ConfigPath: configPath, ComposeService: composeWithCredentials(fakeStore)}
 
-	cmd := newLockCmd(opts)
+	cmd := newLockCmd(opts, filepath.Join(dir, "cache.json"), filepath.Join(dir, "outbox.json"))
 	cmd.SetArgs([]string{})
 	buf := new(bytes.Buffer)
 	cmd.SetOut(buf)
@@ -614,9 +624,9 @@ func TestLockFailsOnCheckAvailableError(t *testing.T) {
 	fakeStore := &fakeCredentialStore{
 		checkAvailableErr: assert.AnError,
 	}
-	opts.CredentialStore = fakeStore
+	opts.ComposeService = composeWithCredentials(fakeStore)
 
-	cmd := newLockCmd(opts)
+	cmd := newLockCmd(opts, filepath.Join(dir, "cache.json"), filepath.Join(dir, "outbox.json"))
 	cmd.SetArgs([]string{"--hard"})
 	buf := new(bytes.Buffer)
 	cmd.SetOut(buf)
@@ -649,7 +659,7 @@ func TestLogoutDeletesCredentialsAndCacheOutbox(t *testing.T) {
 	require.NoError(t, err)
 
 	fakeStore := &fakeCredentialStore{}
-	opts.CredentialStore = fakeStore
+	opts.ComposeService = composeWithCredentials(fakeStore)
 
 	cmd := newLogoutCmd(opts, cachePath, outboxPath)
 	cmd.SetArgs([]string{})
@@ -688,7 +698,7 @@ func TestLogoutNoEmailStillClearsCacheAndOutbox(t *testing.T) {
 	require.NoError(t, os.WriteFile(outboxPath, []byte(`{}`), 0600))
 
 	fakeStore := &fakeCredentialStore{}
-	opts := Options{ConfigPath: configPath, CredentialStore: fakeStore}
+	opts := Options{ConfigPath: configPath, ComposeService: composeWithCredentials(fakeStore)}
 
 	cmd := newLogoutCmd(opts, cachePath, outboxPath)
 	cmd.SetArgs([]string{})
@@ -730,7 +740,7 @@ func TestLogoutFailsOnKeyringError(t *testing.T) {
 	fakeStore := &fakeCredentialStore{
 		checkAvailableErr: assert.AnError,
 	}
-	opts.CredentialStore = fakeStore
+	opts.ComposeService = composeWithCredentials(fakeStore)
 
 	cmd := newLogoutCmd(opts, cachePath, outboxPath)
 	cmd.SetArgs([]string{})

@@ -181,9 +181,10 @@ func TestModeForAuthStatusDetail_KeyringUnavailable(t *testing.T) {
 
 func TestModeForAuthStatusDetail_LoggedInUnlockAvailable(t *testing.T) {
 	detail := session.AuthStatusDetail{
-		Status:        session.LoggedInUnlockAvailable,
-		HasEnvelope:   true,
-		EnvelopeValid: true,
+		Status:              session.LoggedInUnlockAvailable,
+		HasEnvelope:         true,
+		EnvelopeValid:       true,
+		SoftUnlockAvailable: true,
 	}
 	mode := ModeForAuthStatusDetail(detail, true)
 	require.Equal(t, ModePINUnlock, mode)
@@ -211,6 +212,16 @@ func TestModeForAuthStatusDetail_LoggedInLockedNoProfile(t *testing.T) {
 	}
 	mode := ModeForAuthStatusDetail(detail, true)
 	require.Equal(t, ModePINSetup, mode, "no profile → setup")
+}
+
+func TestModeForAuthStatusDetail_PINBackoffUsesRenew(t *testing.T) {
+	detail := session.AuthStatusDetail{
+		Status:        session.LoggedInLocked,
+		Reason:        session.AuthReasonPINBackoff,
+		HasPINProfile: true,
+		HasEnvelope:   true,
+	}
+	require.Equal(t, ModePINRenew, ModeForAuthStatusDetail(detail, true))
 }
 
 func TestModeForAuthStatusDetail_Unauthenticated(t *testing.T) {
@@ -257,18 +268,6 @@ func TestSyncSuspendedForMode(t *testing.T) {
 	} {
 		require.False(t, syncSuspendedForMode(mode), "mode %v should not suspend background sync", mode)
 	}
-}
-
-func TestModeForAuthStatusDetail_LegacyExpiredEnvelopeUsesPINUnlock(t *testing.T) {
-	detail := session.AuthStatusDetail{
-		Status:        session.LoggedInLocked,
-		Reason:        session.AuthReasonEnvelopeExpired,
-		HasPINProfile: true,
-		HasEnvelope:   true,
-		EnvelopeValid: false,
-	}
-	mode := ModeForAuthStatusDetail(detail, true)
-	require.Equal(t, ModePINUnlock, mode, "legacy expired envelope should remain PIN-only within same session")
 }
 
 func TestBack_UnlockModesNoOp(t *testing.T) {
