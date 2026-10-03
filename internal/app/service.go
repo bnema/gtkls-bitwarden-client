@@ -448,10 +448,11 @@ func (s *Service) UnlockWithPIN(ctx context.Context, email, pin string) (retErr 
 	s.cacheKey = make([]byte, len(material.CacheKey))
 	copy(s.cacheKey, material.CacheKey)
 	s.state = auth.LockStateUnlocked
+	s.sessionMode = sessionCacheOnly
 	if s.backgroundSyncEnabledLocked() {
 		workerCtx, cancel = context.WithCancel(context.WithoutCancel(ctx))
 		s.cancelWorkers = cancel
-		s.backgroundSyncMode = backgroundSyncCacheOnly
+		s.backgroundSyncActive = true
 		s.backgroundSyncSuspended = false
 		startWorker = true
 	}
@@ -466,7 +467,7 @@ func (s *Service) UnlockWithPIN(ctx context.Context, email, pin string) (retErr 
 	}
 
 	if startWorker {
-		s.startBackgroundSyncWorker(workerCtx, backgroundSyncCacheOnly)
+		s.startBackgroundSyncWorker(workerCtx, sessionCacheOnly)
 	}
 
 	return nil
@@ -742,6 +743,7 @@ func (s *Service) unlock(ctx context.Context, email, password string, prompt aut
 	copy(s.cacheKey, cacheKey)
 	s.cacheSalt = append(s.cacheSalt[:0], loadedData.Salt...)
 	s.state = auth.LockStateUnlocked
+	s.sessionMode = sessionResident
 
 	if loaded {
 		s.emit(IndexReady, "search index ready")
@@ -754,7 +756,7 @@ func (s *Service) unlock(ctx context.Context, email, password string, prompt aut
 		// Start background sync worker detached from cancellation while preserving logger values.
 		workerCtx, cancel = context.WithCancel(context.WithoutCancel(ctx))
 		s.cancelWorkers = cancel
-		s.backgroundSyncMode = backgroundSyncResident
+		s.backgroundSyncActive = true
 		s.backgroundSyncSuspended = false
 		s.emit(Unlocking, "starting sync worker")
 		startWorker = true
@@ -762,7 +764,7 @@ func (s *Service) unlock(ctx context.Context, email, password string, prompt aut
 	s.mu.Unlock()
 
 	if startWorker {
-		s.startBackgroundSyncWorker(workerCtx, backgroundSyncResident)
+		s.startBackgroundSyncWorker(workerCtx, sessionResident)
 	}
 
 	return nil
@@ -810,7 +812,8 @@ func (s *Service) SoftLock(ctx context.Context) (retErr error) {
 	s.index = nil
 	s.outbox = nil
 	s.conflicts = nil
-	s.backgroundSyncMode = backgroundSyncDisabled
+	s.sessionMode = sessionResident
+	s.backgroundSyncActive = false
 	s.backgroundSyncSuspended = false
 	s.state = auth.LockStateLocked
 
@@ -850,28 +853,13 @@ func (s *Service) HardLock(ctx context.Context, email string) (retErr error) {
 }
 
 // Search searches vault items by query. Returns ErrLocked if not unlocked.
-// Resident unlocked state is authoritative when present; cache-backed sessions
-// (for example PIN unlock) fall back to the encrypted cache when resident
-// plaintext is intentionally absent. A local search index is built for the
+// Resident sessions (password unlock) search resident items; cache-only
+// sessions (PIN unlock) search the encrypted cache. A local search index is built for the
 // query and discarded afterward; no resident index is consulted or modified.
 func (s *Service) Search(ctx context.Context, query string, limit int) ([]vault.ScoredItem, error) {
-	s.mu.Lock()
-	if s.state != auth.LockStateUnlocked {
-		s.mu.Unlock()
-		return nil, cerrors.ErrLocked
-	}
-	// Copy cache key and fallback items under lock, then release.
-	cacheKey := make([]byte, len(s.cacheKey))
-	copy(cacheKey, s.cacheKey)
-	residentItems := make([]vault.Item, len(s.items))
-	copy(residentItems, s.items)
-	s.mu.Unlock()
-
-	items := residentItems
-	if len(items) == 0 && len(cacheKey) > 0 {
-		if cached, err := s.vaultCache().Open(ctx, cacheKey); err == nil && len(cached.Items) > 0 {
-			items = cached.Items
-		}
+	items, err := s.unlockedItems(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	if len(items) == 0 {
@@ -884,29 +872,13 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]vault.
 }
 
 // Items returns a copy of all vault items. Returns ErrLocked if not unlocked.
-// Resident unlocked state is authoritative when present; cache-backed sessions
-// fall back to the encrypted cache when resident plaintext is intentionally
-// absent.
+// Resident sessions return resident items; cache-only sessions read the
+// encrypted cache.
 func (s *Service) Items(ctx context.Context) ([]vault.Item, error) {
-	s.mu.Lock()
-	if s.state != auth.LockStateUnlocked {
-		s.mu.Unlock()
-		return nil, cerrors.ErrLocked
+	items, err := s.unlockedItems(ctx)
+	if err != nil {
+		return nil, err
 	}
-	// Copy cache key and fallback items under lock, then release.
-	cacheKey := make([]byte, len(s.cacheKey))
-	copy(cacheKey, s.cacheKey)
-	residentItems := make([]vault.Item, len(s.items))
-	copy(residentItems, s.items)
-	s.mu.Unlock()
-
-	items := residentItems
-	if len(items) == 0 && len(cacheKey) > 0 {
-		if cached, err := s.vaultCache().Open(ctx, cacheKey); err == nil && len(cached.Items) > 0 {
-			items = cached.Items
-		}
-	}
-
 	result := make([]vault.Item, len(items))
 	copy(result, items)
 	return result, nil
@@ -938,27 +910,17 @@ func (s *Service) ConflictDetail(ctx context.Context, conflictID string) (coresy
 		s.mu.Unlock()
 		return coresync.ConflictDetail{}, cerrors.ErrNotFound
 	}
-	cacheOnly := s.backgroundSyncMode == backgroundSyncCacheOnly || (s.items == nil && s.folders == nil && s.outbox == nil && len(s.cacheKey) > 0)
-	key := append([]byte(nil), s.cacheKey...)
-	residentItems := cloneVaultItems(s.items)
-	residentOutbox := append([]coresync.OutboxMutation(nil), s.outbox...)
-	pendingRemoteItems := cloneVaultItems(s.pendingRemoteItems)
+	view := s.sessionViewLocked(true)
 	s.mu.Unlock()
-	defer clear(key)
+	defer view.close()
 
-	localItems := residentItems
-	outbox := residentOutbox
-	remoteItems := pendingRemoteItems
-
-	if cacheOnly {
-		snap, err := s.vaultCache().Open(ctx, key)
-		if err != nil {
-			return coresync.ConflictDetail{}, err
-		}
-		localItems = cloneVaultItems(snap.Items)
-		outbox = append([]coresync.OutboxMutation(nil), snap.Outbox...)
-		remoteItems = nil
+	snap, err := view.load(ctx, s.vaultCache())
+	if err != nil {
+		return coresync.ConflictDetail{}, err
 	}
+	localItems := snap.Items
+	outbox := snap.Outbox
+	remoteItems := snap.PendingRemote
 
 	if len(remoteItems) == 0 && conflict.Reason != coresync.ConflictRemoteDeleted && s.deps.Remote != nil {
 		items, _, _, err := s.deps.Remote.Sync(ctx)
@@ -970,28 +932,13 @@ func (s *Service) ConflictDetail(ctx context.Context, conflictID string) (coresy
 	return conflictDetailFromSnapshots(conflict, localItems, remoteItems, outbox), nil
 }
 
-// Get returns a single vault item by ID. Resident unlocked state is
-// authoritative when present; cache-backed sessions fall back to the encrypted
-// cache when resident plaintext is intentionally absent. Returns ErrNotFound
+// Get returns a single vault item by ID from resident state (resident
+// sessions) or the encrypted cache (cache-only sessions). Returns ErrNotFound
 // when the item is not found.
 func (s *Service) Get(ctx context.Context, id string) (vault.Item, error) {
-	s.mu.Lock()
-	if s.state != auth.LockStateUnlocked {
-		s.mu.Unlock()
-		return vault.Item{}, cerrors.ErrLocked
-	}
-	// Copy cache key and fallback items under lock, then release.
-	cacheKey := make([]byte, len(s.cacheKey))
-	copy(cacheKey, s.cacheKey)
-	residentItems := make([]vault.Item, len(s.items))
-	copy(residentItems, s.items)
-	s.mu.Unlock()
-
-	items := residentItems
-	if len(items) == 0 && len(cacheKey) > 0 {
-		if cached, err := s.vaultCache().Open(ctx, cacheKey); err == nil && len(cached.Items) > 0 {
-			items = cached.Items
-		}
+	items, err := s.unlockedItems(ctx)
+	if err != nil {
+		return vault.Item{}, err
 	}
 
 	for _, item := range items {
@@ -1081,7 +1028,8 @@ func (s *Service) Shutdown(ctx context.Context) (retErr error) {
 	s.pendingRemoteItems = nil
 	s.pendingRemoteFolders = nil
 	s.zeroCacheKeyLocked()
-	s.backgroundSyncMode = backgroundSyncDisabled
+	s.sessionMode = sessionResident
+	s.backgroundSyncActive = false
 	s.backgroundSyncSuspended = false
 	s.state = auth.LockStateLocked
 	s.mu.Unlock()
@@ -2173,12 +2121,15 @@ func (s *Service) ResolveConflict(ctx context.Context, conflictID string, resolu
 		s.mu.Unlock()
 		return err
 	}
-	cacheOnly := s.backgroundSyncMode == backgroundSyncCacheOnly || (s.items == nil && s.folders == nil && s.outbox == nil && len(s.cacheKey) > 0)
-	key := append([]byte(nil), s.cacheKey...)
+	mode := s.sessionMode
+	var key []byte
+	if mode.cacheOnly() {
+		key = append(key, s.cacheKey...)
+	}
 	s.mu.Unlock()
-	defer clear(key)
 
-	if cacheOnly {
+	if mode.cacheOnly() {
+		defer clear(key)
 		return s.resolveConflictCacheOnly(ctx, key, conflictID, resolution)
 	}
 
