@@ -1252,28 +1252,21 @@ func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutateItems 
 }
 
 func upsertVaultItem(items []vault.Item, item vault.Item) []vault.Item {
+	return upsertVaultItemAs(items, item.ID, item)
+}
+
+// upsertVaultItemAs returns a copy of items in which the entry with ID key is
+// replaced by item, or item is appended if no entry has that ID.
+func upsertVaultItemAs(items []vault.Item, key string, item vault.Item) []vault.Item {
 	out := make([]vault.Item, len(items), len(items)+1)
 	copy(out, items)
 	for i, existing := range out {
-		if existing.ID == item.ID {
+		if existing.ID == key {
 			out[i] = item
 			return out
 		}
 	}
 	return append(out, item)
-}
-
-func markVaultItemDeleted(items []vault.Item, id string, deleted bool) []vault.Item {
-	out := make([]vault.Item, len(items))
-	copy(out, items)
-	for i := range out {
-		if out[i].ID == id {
-			out[i].Deleted = deleted
-			out[i].SyncStatus = vault.SyncStatusSynced
-			return out
-		}
-	}
-	return out
 }
 
 func findConflictByID(conflicts []coresync.Conflict, id string) (coresync.Conflict, bool) {
@@ -1717,354 +1710,31 @@ func (s *Service) AuthStatusDetail(ctx context.Context, email string) (detail se
 
 // Create creates a new vault item. If remote is available, it tries to create
 // online first. On failure or offline, it queues a pending mutation.
-func (s *Service) Create(ctx context.Context, item vault.Item) (retItem vault.Item, retErr error) {
-	log, started := logAppServiceStart(ctx, "mutation_create")
-	defer func() {
-		count := 0
-		if retErr == nil && retItem.ID != "" {
-			count = 1
-		}
-		logAppServiceFinishCount(log, started, retErr, count)
-	}()
-
-	s.mu.Lock()
-	if err := s.ensureUnlocked(); err != nil {
-		s.mu.Unlock()
-		return vault.Item{}, err
-	}
-	s.mu.Unlock()
-
-	// Try remote if available.
-	if s.deps.Remote != nil {
-		remoteItem, err := s.deps.Remote.Create(ctx, item)
-		if err == nil {
-			s.mu.Lock()
-			if err := s.ensureUnlocked(); err != nil {
-				s.mu.Unlock()
-				logRemoteSuccessLocalLocked(ctx, "remote_create_local_update")
-				return vault.Item{}, err
-			}
-			remoteItem.SyncStatus = vault.SyncStatusSynced
-			s.items = append(s.items, remoteItem)
-			s.rebuildIndexLocked()
-			s.saveCacheItemsAsyncLocked(ctx, func(items []vault.Item) []vault.Item {
-				return upsertVaultItem(items, remoteItem)
-			})
-			s.mu.Unlock()
-			s.emit(SyncUpdated, "item created remotely")
-			return remoteItem, nil
-		}
-	}
-
-	// Remote missing or error: queue pending locally.
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.ensureUnlocked(); err != nil {
-		return vault.Item{}, err
-	}
-
-	if item.ID == "" {
-		s.outboxSeq++
-		item.ID = fmt.Sprintf("local-%d-%d", s.now().UnixNano(), s.outboxSeq)
-	}
-	item.SyncStatus = vault.SyncStatusPending
-	item.RevisionDate = s.now()
-
-	payload, err := json.Marshal(item)
-	if err != nil {
-		return vault.Item{}, fmt.Errorf("app: marshal create payload: %w", err)
-	}
-	s.appendOutboxLocked(ctx, coresync.MutationCreate, item.ID, payload)
-
-	s.items = append(s.items, item)
-	s.rebuildIndexLocked()
-	s.emit(MutationPending, "item queued for creation")
-	return item, nil
+func (s *Service) Create(ctx context.Context, item vault.Item) (vault.Item, error) {
+	return s.applyMutation(ctx, createMutation, mutation{Item: item})
 }
 
 // Update updates an existing vault item. Tries remote first, falls back to
 // local pending mutation.
-func (s *Service) Update(ctx context.Context, id string, item vault.Item) (retItem vault.Item, retErr error) {
-	log, started := logAppServiceStart(ctx, "mutation_update")
-	defer func() {
-		count := 0
-		if retErr == nil && retItem.ID != "" {
-			count = 1
-		}
-		logAppServiceFinishCount(log, started, retErr, count)
-	}()
-
-	s.mu.Lock()
-	if err := s.ensureUnlocked(); err != nil {
-		s.mu.Unlock()
-		return vault.Item{}, err
-	}
-	s.mu.Unlock()
-
-	if s.deps.Remote != nil {
-		remoteItem, err := s.deps.Remote.Update(ctx, id, item)
-		if err == nil {
-			s.mu.Lock()
-			if err := s.ensureUnlocked(); err != nil {
-				s.mu.Unlock()
-				logRemoteSuccessLocalLocked(ctx, "remote_update_local_update")
-				return vault.Item{}, err
-			}
-			remoteItem.SyncStatus = vault.SyncStatusSynced
-			for i, existing := range s.items {
-				if existing.ID == id {
-					s.items[i] = remoteItem
-					break
-				}
-			}
-			s.rebuildIndexLocked()
-			s.saveCacheItemsAsyncLocked(ctx, func(items []vault.Item) []vault.Item {
-				return upsertVaultItem(items, remoteItem)
-			})
-			s.mu.Unlock()
-			s.emit(SyncUpdated, "item updated remotely")
-			return remoteItem, nil
-		}
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.ensureUnlocked(); err != nil {
-		return vault.Item{}, err
-	}
-
-	item.ID = id
-	item.SyncStatus = vault.SyncStatusPending
-	item.RevisionDate = s.now()
-
-	payload, err := json.Marshal(item)
-	if err != nil {
-		return vault.Item{}, fmt.Errorf("app: marshal update payload: %w", err)
-	}
-	s.appendOutboxLocked(ctx, coresync.MutationUpdate, id, payload)
-
-	found := false
-	for i, existing := range s.items {
-		if existing.ID == id {
-			s.items[i] = item
-			found = true
-			break
-		}
-	}
-	if !found {
-		s.items = append(s.items, item)
-	}
-	s.rebuildIndexLocked()
-	s.emit(MutationPending, "item queued for update")
-	return item, nil
+func (s *Service) Update(ctx context.Context, id string, item vault.Item) (vault.Item, error) {
+	return s.applyMutation(ctx, updateMutation, mutation{ID: id, Item: item})
 }
 
 // Trash moves an item to the trash. Tries remote first, falls back to local pending.
-func (s *Service) Trash(ctx context.Context, id string) (retErr error) {
-	log, started := logAppServiceStart(ctx, "mutation_trash")
-	defer func() {
-		count := 0
-		if retErr == nil {
-			count = 1
-		}
-		logAppServiceFinishCount(log, started, retErr, count)
-	}()
-
-	s.mu.Lock()
-	if err := s.ensureUnlocked(); err != nil {
-		s.mu.Unlock()
-		return err
-	}
-	s.mu.Unlock()
-
-	if s.deps.Remote != nil {
-		err := s.deps.Remote.Trash(ctx, id)
-		if err == nil {
-			s.mu.Lock()
-			if err := s.ensureUnlocked(); err != nil {
-				s.mu.Unlock()
-				logRemoteSuccessLocalLocked(ctx, "remote_trash_local_update")
-				return err
-			}
-			for i, existing := range s.items {
-				if existing.ID == id {
-					s.items[i].Deleted = true
-					s.items[i].SyncStatus = vault.SyncStatusSynced
-					break
-				}
-			}
-			s.rebuildIndexLocked()
-			s.saveCacheItemsAsyncLocked(ctx, func(items []vault.Item) []vault.Item {
-				return markVaultItemDeleted(items, id, true)
-			})
-			s.mu.Unlock()
-			s.emit(SyncUpdated, "item trashed remotely")
-			return nil
-		}
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.ensureUnlocked(); err != nil {
-		return err
-	}
-
-	payload, err := json.Marshal(map[string]string{"id": id})
-	if err != nil {
-		return fmt.Errorf("app: marshal trash payload: %w", err)
-	}
-	s.appendOutboxLocked(ctx, coresync.MutationTrash, id, payload)
-
-	for i, existing := range s.items {
-		if existing.ID == id {
-			s.items[i].Deleted = true
-			s.items[i].SyncStatus = vault.SyncStatusPending
-			break
-		}
-	}
-
-	s.rebuildIndexLocked()
-	s.emit(MutationPending, "item queued for trash")
-	return nil
+func (s *Service) Trash(ctx context.Context, id string) error {
+	_, err := s.applyMutation(ctx, trashMutation, mutation{ID: id})
+	return err
 }
 
 // Restore restores an item from the trash. Tries remote first, falls back to local pending.
-func (s *Service) Restore(ctx context.Context, id string) (retItem vault.Item, retErr error) {
-	log, started := logAppServiceStart(ctx, "mutation_restore")
-	defer func() {
-		count := 0
-		if retErr == nil && retItem.ID != "" {
-			count = 1
-		}
-		logAppServiceFinishCount(log, started, retErr, count)
-	}()
-
-	s.mu.Lock()
-	if err := s.ensureUnlocked(); err != nil {
-		s.mu.Unlock()
-		return vault.Item{}, err
-	}
-	s.mu.Unlock()
-
-	if s.deps.Remote != nil {
-		remoteItem, err := s.deps.Remote.Restore(ctx, id)
-		if err == nil {
-			s.mu.Lock()
-			if err := s.ensureUnlocked(); err != nil {
-				s.mu.Unlock()
-				logRemoteSuccessLocalLocked(ctx, "remote_restore_local_update")
-				return vault.Item{}, err
-			}
-			remoteItem.Deleted = false
-			remoteItem.SyncStatus = vault.SyncStatusSynced
-			for i, existing := range s.items {
-				if existing.ID == id {
-					s.items[i] = remoteItem
-					break
-				}
-			}
-			s.rebuildIndexLocked()
-			s.saveCacheItemsAsyncLocked(ctx, func(items []vault.Item) []vault.Item {
-				return upsertVaultItem(items, remoteItem)
-			})
-			s.mu.Unlock()
-			s.emit(SyncUpdated, "item restored remotely")
-			return remoteItem, nil
-		}
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.ensureUnlocked(); err != nil {
-		return vault.Item{}, err
-	}
-
-	payload, err := json.Marshal(map[string]string{"id": id})
-	if err != nil {
-		return vault.Item{}, fmt.Errorf("app: marshal restore payload: %w", err)
-	}
-	s.appendOutboxLocked(ctx, coresync.MutationRestore, id, payload)
-
-	var restored vault.Item
-	for i, existing := range s.items {
-		if existing.ID == id {
-			s.items[i].Deleted = false
-			s.items[i].SyncStatus = vault.SyncStatusPending
-			restored = s.items[i]
-			break
-		}
-	}
-
-	s.rebuildIndexLocked()
-	s.emit(MutationPending, "item queued for restore")
-	return restored, nil
+func (s *Service) Restore(ctx context.Context, id string) (vault.Item, error) {
+	return s.applyMutation(ctx, restoreMutation, mutation{ID: id})
 }
 
 // Delete permanently deletes a vault item. Tries remote first, falls back to local pending.
-func (s *Service) Delete(ctx context.Context, id string) (retErr error) {
-	log, started := logAppServiceStart(ctx, "mutation_delete")
-	defer func() {
-		count := 0
-		if retErr == nil {
-			count = 1
-		}
-		logAppServiceFinishCount(log, started, retErr, count)
-	}()
-
-	s.mu.Lock()
-	if err := s.ensureUnlocked(); err != nil {
-		s.mu.Unlock()
-		return err
-	}
-	s.mu.Unlock()
-
-	if s.deps.Remote != nil {
-		err := s.deps.Remote.Delete(ctx, id)
-		if err == nil {
-			s.mu.Lock()
-			if err := s.ensureUnlocked(); err != nil {
-				s.mu.Unlock()
-				logRemoteSuccessLocalLocked(ctx, "remote_delete_local_update")
-				return err
-			}
-			for i, existing := range s.items {
-				if existing.ID == id {
-					s.items = append(s.items[:i], s.items[i+1:]...)
-					break
-				}
-			}
-			s.rebuildIndexLocked()
-			s.saveCacheItemsAsyncLocked(ctx, func(items []vault.Item) []vault.Item {
-				return removeVaultItem(items, id)
-			})
-			s.mu.Unlock()
-			s.emit(SyncUpdated, "item deleted remotely")
-			return nil
-		}
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.ensureUnlocked(); err != nil {
-		return err
-	}
-
-	payload, err := json.Marshal(map[string]string{"id": id})
-	if err != nil {
-		return fmt.Errorf("app: marshal delete payload: %w", err)
-	}
-	s.appendOutboxLocked(ctx, coresync.MutationDelete, id, payload)
-
-	for i, existing := range s.items {
-		if existing.ID == id {
-			s.items = append(s.items[:i], s.items[i+1:]...)
-			break
-		}
-	}
-
-	s.rebuildIndexLocked()
-	s.emit(MutationPending, "item queued for deletion")
-	return nil
+func (s *Service) Delete(ctx context.Context, id string) error {
+	_, err := s.applyMutation(ctx, deleteMutation, mutation{ID: id})
+	return err
 }
 
 // ListAttachments is not yet supported.
@@ -2454,39 +2124,8 @@ func (s *Service) replayOutbox(ctx context.Context, outbox []coresync.OutboxMuta
 			return err
 		}
 
-		switch m.Kind {
-		case coresync.MutationCreate, coresync.MutationUpdate:
-			var item vault.Item
-			if err := json.Unmarshal(m.Payload, &item); err != nil {
-				return fmt.Errorf("replay unmarshal: %w", err)
-			}
-			var err error
-			if m.Kind == coresync.MutationCreate {
-				_, err = s.deps.Remote.Create(ctx, item)
-			} else {
-				_, err = s.deps.Remote.Update(ctx, m.ItemID, item)
-			}
-			if err != nil {
-				return fmt.Errorf("replay %s: %w", m.Kind, err)
-			}
-
-		case coresync.MutationTrash:
-			if err := s.deps.Remote.Trash(ctx, m.ItemID); err != nil {
-				return fmt.Errorf("replay trash: %w", err)
-			}
-
-		case coresync.MutationRestore:
-			if _, err := s.deps.Remote.Restore(ctx, m.ItemID); err != nil {
-				return fmt.Errorf("replay restore: %w", err)
-			}
-
-		case coresync.MutationDelete:
-			if err := s.deps.Remote.Delete(ctx, m.ItemID); err != nil {
-				return fmt.Errorf("replay delete: %w", err)
-			}
-
-		default:
-			return fmt.Errorf("%w: unknown mutation kind %s", cerrors.ErrUnsupported, m.Kind)
+		if err := s.replayMutation(ctx, m); err != nil {
+			return err
 		}
 	}
 
