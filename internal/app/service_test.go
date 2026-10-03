@@ -793,8 +793,10 @@ func TestResolveConflictKeepLocalThenSyncNowReplaysCacheOnlyOutbox(t *testing.T)
 	require.NoError(t, svc.ResolveConflict(context.Background(), conflict.ID, coresync.ResolutionKeepLocal))
 	require.NoError(t, svc.SyncNow(context.Background()))
 
-	items, _, outboxAfter, err := svc.loadCachedVaultWithKey(context.Background(), cacheKey)
+	cached, err := svc.vaultCache().Open(context.Background(), cacheKey)
 	require.NoError(t, err)
+	items := cached.Items
+	outboxAfter := cached.Outbox
 	require.Len(t, items, 1)
 	require.Equal(t, "Local Cache Replayed", items[0].Name)
 	require.Empty(t, outboxAfter)
@@ -829,8 +831,10 @@ func TestResolveConflictKeepLocalCacheOnlyFetchesRemoteRevisionWhenMissing(t *te
 	require.NoError(t, svc.ResolveConflict(context.Background(), conflict.ID, coresync.ResolutionKeepLocal))
 	require.NoError(t, svc.SyncNow(context.Background()))
 
-	items, _, outboxAfter, err := svc.loadCachedVaultWithKey(context.Background(), cacheKey)
+	cached, err := svc.vaultCache().Open(context.Background(), cacheKey)
 	require.NoError(t, err)
+	items := cached.Items
+	outboxAfter := cached.Outbox
 	require.Len(t, items, 1)
 	require.Equal(t, "Local Cache Replayed", items[0].Name)
 	require.Empty(t, outboxAfter)
@@ -856,8 +860,9 @@ func TestSyncNowCacheOnlyUpdatesEncryptedCache(t *testing.T) {
 
 	require.NoError(t, svc.SyncNow(context.Background()))
 
-	items, _, _, err := svc.loadCachedVaultWithKey(context.Background(), cacheKey)
+	cached, err := svc.vaultCache().Open(context.Background(), cacheKey)
 	require.NoError(t, err)
+	items := cached.Items
 	require.Len(t, items, 1)
 	require.Equal(t, "Remote Cache", items[0].Name)
 }
@@ -1871,8 +1876,11 @@ func TestResolveConflictKeepRemoteInCacheOnlySessionUpdatesEncryptedCache(t *tes
 		t.Fatal("timed out waiting for cache save after conflict resolution")
 	}
 
-	items, folders, savedOutbox, err := svc.loadCachedVaultWithKey(context.Background(), cacheKey)
+	cached, err := svc.vaultCache().Open(context.Background(), cacheKey)
 	require.NoError(t, err)
+	items := cached.Items
+	folders := cached.Folders
+	savedOutbox := cached.Outbox
 	require.Len(t, items, 1)
 	require.Equal(t, remoteItem.Name, items[0].Name)
 	require.Equal(t, vault.SyncStatusSynced, items[0].SyncStatus)
@@ -1905,8 +1913,11 @@ func TestLoadCachedVaultWithKeyLoadsStandaloneOutboxWithoutCacheSnapshot(t *test
 		Outbox:    &fakeOutbox{loadData: pending},
 	})
 
-	items, folders, outbox, err := svc.loadCachedVaultWithKey(context.Background(), cacheKey)
+	cached, err := svc.vaultCache().Open(context.Background(), cacheKey)
 	require.NoError(t, err)
+	items := cached.Items
+	folders := cached.Folders
+	outbox := cached.Outbox
 	require.Empty(t, items)
 	require.Empty(t, folders)
 	require.Len(t, outbox, 1)
@@ -1982,8 +1993,11 @@ func TestResolveConflictKeepRemoteCacheOnlyUpdatesEncryptedCache(t *testing.T) {
 		return cacheStore.saveCalled > 0
 	}, time.Second, 10*time.Millisecond)
 
-	items, folders, outbox, err := svc.loadCachedVaultWithKey(context.Background(), cacheKey)
+	cached, err := svc.vaultCache().Open(context.Background(), cacheKey)
 	require.NoError(t, err)
+	items := cached.Items
+	folders := cached.Folders
+	outbox := cached.Outbox
 	require.Len(t, items, 1)
 	require.Equal(t, remoteItem.Name, items[0].Name)
 	require.Equal(t, vault.SyncStatusSynced, items[0].SyncStatus)

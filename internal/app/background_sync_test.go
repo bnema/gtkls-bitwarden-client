@@ -215,8 +215,11 @@ func TestSyncOnceCacheOnlyRefreshesEncryptedCacheWithoutResidentState(t *testing
 
 	svc.syncOnceCacheOnly(context.Background())
 
-	items, folders, outbox, err := svc.loadCachedVaultWithKey(context.Background(), cacheKey)
+	cached, err := svc.vaultCache().Open(context.Background(), cacheKey)
 	require.NoError(t, err)
+	items := cached.Items
+	folders := cached.Folders
+	outbox := cached.Outbox
 	require.Len(t, items, 1)
 	require.Equal(t, refreshedItem.Name, items[0].Name)
 	require.Empty(t, folders)
@@ -297,8 +300,11 @@ func TestSyncOnceCacheOnlyMarksConflictsInEncryptedCache(t *testing.T) {
 
 	svc.syncOnceCacheOnly(context.Background())
 
-	items, folders, outbox, err := svc.loadCachedVaultWithKey(context.Background(), cacheKey)
+	cached, err := svc.vaultCache().Open(context.Background(), cacheKey)
 	require.NoError(t, err)
+	items := cached.Items
+	folders := cached.Folders
+	outbox := cached.Outbox
 	require.Len(t, items, 1)
 	require.Empty(t, folders)
 	require.Len(t, outbox, 1)
@@ -307,8 +313,7 @@ func TestSyncOnceCacheOnlyMarksConflictsInEncryptedCache(t *testing.T) {
 	require.Equal(t, pendingUpdate.ID, outbox[0].ID)
 	require.Equal(t, pendingUpdate.ItemID, outbox[0].ItemID)
 
-	persistedConflicts, err := svc.loadCachedConflictsWithKey(context.Background(), cacheKey)
-	require.NoError(t, err)
+	persistedConflicts := cached.Conflicts
 	require.Len(t, persistedConflicts, 1)
 	require.Equal(t, localItem.ID, persistedConflicts[0].ItemID)
 	require.Equal(t, items[0].ConflictID, persistedConflicts[0].ID)
@@ -359,8 +364,9 @@ func TestSyncOnceCacheOnlyReplaysOutboxBeforeClearingEncryptedCache(t *testing.T
 
 	svc.syncOnceCacheOnly(context.Background())
 
-	_, _, outbox, err := svc.loadCachedVaultWithKey(context.Background(), cacheKey)
+	cached, err := svc.vaultCache().Open(context.Background(), cacheKey)
 	require.NoError(t, err)
+	outbox := cached.Outbox
 	require.Empty(t, outbox, "encrypted cache outbox should be cleared only after replay succeeds")
 
 	select {
