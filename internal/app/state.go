@@ -45,7 +45,8 @@ type Service struct {
 	index                   *vault.SearchIndex
 	events                  chan Event
 	cancelWorkers           context.CancelFunc
-	backgroundSyncMode      backgroundSyncMode
+	sessionMode             sessionMode
+	backgroundSyncActive    bool
 	backgroundSyncSuspended bool
 	deps                    Deps
 

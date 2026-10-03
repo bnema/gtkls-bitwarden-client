@@ -12,19 +12,11 @@ import (
 	"github.com/bnema/gtkls-bitwarden-client/internal/core/vault"
 )
 
-type backgroundSyncMode int
-
-const (
-	backgroundSyncDisabled backgroundSyncMode = iota
-	backgroundSyncResident
-	backgroundSyncCacheOnly
-)
-
 func (s *Service) SetBackgroundSyncSuspended(ctx context.Context, suspended bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.state != auth.LockStateUnlocked || s.backgroundSyncMode == backgroundSyncDisabled {
+	if s.state != auth.LockStateUnlocked || !s.backgroundSyncActive {
 		return nil
 	}
 
@@ -45,10 +37,15 @@ func (s *Service) SyncNow(ctx context.Context) error {
 		s.mu.Unlock()
 		return err
 	}
-	cacheOnly := s.backgroundSyncMode == backgroundSyncCacheOnly || (s.items == nil && s.folders == nil && s.outbox == nil && len(s.cacheKey) > 0)
+	mode := s.sessionMode
 	s.mu.Unlock()
 
-	if cacheOnly {
+	return s.syncSession(ctx, mode)
+}
+
+// syncSession runs one sync cycle appropriate for the session storage mode.
+func (s *Service) syncSession(ctx context.Context, mode sessionMode) error {
+	if mode.cacheOnly() {
 		return s.syncOnceCacheOnly(ctx)
 	}
 	return s.syncOnce(ctx)
@@ -58,7 +55,7 @@ func (s *Service) backgroundSyncEnabledLocked() bool {
 	return s.cfg != nil && s.cfg.Security.BackgroundSync.Enabled
 }
 
-func (s *Service) startBackgroundSyncWorker(ctx context.Context, mode backgroundSyncMode) {
+func (s *Service) startBackgroundSyncWorker(ctx context.Context, mode sessionMode) {
 	go func() {
 		s.syncOnceByMode(ctx, mode)
 
@@ -113,7 +110,7 @@ func (s *Service) saveExplicitCacheSnapshot(ctx context.Context, key []byte, sna
 	return nil
 }
 
-func (s *Service) syncOnceByMode(ctx context.Context, mode backgroundSyncMode) {
+func (s *Service) syncOnceByMode(ctx context.Context, mode sessionMode) {
 	s.mu.Lock()
 	locked := s.state != auth.LockStateUnlocked
 	suspended := s.backgroundSyncSuspended
@@ -124,16 +121,7 @@ func (s *Service) syncOnceByMode(ctx context.Context, mode backgroundSyncMode) {
 		return
 	}
 
-	switch mode {
-	case backgroundSyncResident:
-		s.syncOnceResident(ctx)
-	case backgroundSyncCacheOnly:
-		s.syncOnceCacheOnly(ctx)
-	}
-}
-
-func (s *Service) syncOnceResident(ctx context.Context) {
-	_ = s.syncOnce(ctx)
+	_ = s.syncSession(ctx, mode)
 }
 
 func (s *Service) syncOnceCacheOnly(ctx context.Context) error {

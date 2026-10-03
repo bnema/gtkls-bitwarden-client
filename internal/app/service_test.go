@@ -671,7 +671,7 @@ func TestConflictDetailCacheOnlyFetchesRemoteSummary(t *testing.T) {
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
-	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.sessionMode = sessionCacheOnly
 	svc.conflicts = []coresync.Conflict{{ID: "c1", ItemID: "item-1", MutationID: "m1", Reason: coresync.ConflictBothModified}}
 	svc.mu.Unlock()
 
@@ -786,7 +786,7 @@ func TestResolveConflictKeepLocalThenSyncNowReplaysCacheOnlyOutbox(t *testing.T)
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
-	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.sessionMode = sessionCacheOnly
 	svc.conflicts = []coresync.Conflict{conflict}
 	svc.mu.Unlock()
 
@@ -824,7 +824,7 @@ func TestResolveConflictKeepLocalCacheOnlyFetchesRemoteRevisionWhenMissing(t *te
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
-	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.sessionMode = sessionCacheOnly
 	svc.conflicts = []coresync.Conflict{conflict}
 	svc.mu.Unlock()
 
@@ -855,7 +855,7 @@ func TestSyncNowCacheOnlyUpdatesEncryptedCache(t *testing.T) {
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
-	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.sessionMode = sessionCacheOnly
 	svc.mu.Unlock()
 
 	require.NoError(t, svc.SyncNow(context.Background()))
@@ -891,7 +891,7 @@ func TestSyncNowReturnsCacheOnlySyncError(t *testing.T) {
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
-	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.sessionMode = sessionCacheOnly
 	svc.mu.Unlock()
 
 	err := svc.SyncNow(context.Background())
@@ -1858,7 +1858,7 @@ func TestResolveConflictKeepRemoteInCacheOnlySessionUpdatesEncryptedCache(t *tes
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
-	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.sessionMode = sessionCacheOnly
 	svc.conflicts = []coresync.Conflict{{
 		ID:         conflictID,
 		ItemID:     localItem.ID,
@@ -1977,7 +1977,7 @@ func TestResolveConflictKeepRemoteCacheOnlyUpdatesEncryptedCache(t *testing.T) {
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
-	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.sessionMode = sessionCacheOnly
 	svc.conflicts = []coresync.Conflict{{
 		ID:         localItem.ConflictID,
 		ItemID:     localItem.ID,
@@ -2052,7 +2052,7 @@ func TestResolveConflictCacheOnlyCleanupIsIdempotent(t *testing.T) {
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
-	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.sessionMode = sessionCacheOnly
 	svc.conflicts = []coresync.Conflict{{
 		ID:         conflictID,
 		ItemID:     localItem.ID,
@@ -4251,6 +4251,7 @@ func TestSearchDoesNotLeavePlaintextItemsResidentAfterOperation(t *testing.T) {
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
+	svc.sessionMode = sessionCacheOnly
 	svc.mu.Unlock()
 
 	// Search should find the item via cache.
@@ -4289,6 +4290,7 @@ func TestGetDoesNotLeavePlaintextItemsResidentAfterOperation(t *testing.T) {
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
+	svc.sessionMode = sessionCacheOnly
 	svc.mu.Unlock()
 
 	// Get existing item.
@@ -4325,6 +4327,7 @@ func TestItemsDoesNotLeavePlaintextItemsResidentAfterOperation(t *testing.T) {
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
+	svc.sessionMode = sessionCacheOnly
 	svc.mu.Unlock()
 
 	items, err := svc.Items(context.Background())
