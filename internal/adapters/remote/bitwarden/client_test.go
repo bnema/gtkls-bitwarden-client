@@ -162,20 +162,6 @@ func TestRemoteExportRestoreSessionRoundTrip(t *testing.T) {
 }
 
 func TestRemoteSessionMethodsNilSDKReturnError(t *testing.T) {
-	t.Run("Login nil sdk", func(t *testing.T) {
-		var c *Client
-		err := c.Login(context.Background(), "user@example.com", "password", nil)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "nil")
-	})
-
-	t.Run("Login nil sdk field", func(t *testing.T) {
-		c := &Client{sdk: nil}
-		err := c.Login(context.Background(), "user@example.com", "password", nil)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "nil")
-	})
-
 	t.Run("BeginLogin nil sdk", func(t *testing.T) {
 		var c *Client
 		_, err := c.BeginLogin(context.Background(), "user@example.com", "password", nil)

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -94,7 +93,6 @@ type fakeRemote struct {
 	beginChallenge           *auth.TwoFactorChallenge
 	beginCalled              bool
 	beginRememberedTwoFactor []byte
-	loginRememberedTwoFactor []byte
 	completeProvider         auth.TwoFactorProvider
 	completeCode             string
 
@@ -124,7 +122,7 @@ type fakeRemote struct {
 	restoreSessionErr error
 }
 
-func (r *fakeRemote) Login(ctx context.Context, email, password string, rememberedTwoFactorToken []byte) error {
+func (r *fakeRemote) BeginLogin(ctx context.Context, email, password string, rememberedTwoFactorToken []byte) (*auth.TwoFactorChallenge, error) {
 	r.mu.Lock()
 	onLogin := r.onLogin
 	enterCh := r.loginEnterCh
@@ -139,22 +137,16 @@ func (r *fakeRemote) Login(ctx context.Context, email, password string, remember
 	}
 
 	if onLogin != nil {
-		return onLogin(ctx, email, password)
+		if err := onLogin(ctx, email, password); err != nil {
+			return nil, err
+		}
 	}
 
-	r.mu.Lock()
-	r.loginCalled = true
-	r.loginRememberedTwoFactor = append([]byte(nil), rememberedTwoFactorToken...)
-	r.mu.Unlock()
-	return nil
-}
-
-func (r *fakeRemote) BeginLogin(ctx context.Context, email, password string, rememberedTwoFactorToken []byte) (*auth.TwoFactorChallenge, error) {
-	if err := r.Login(ctx, email, password, rememberedTwoFactorToken); err != nil {
-		return nil, err
-	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if onLogin == nil {
+		r.loginCalled = true
+	}
 	r.beginCalled = true
 	r.beginRememberedTwoFactor = append([]byte(nil), rememberedTwoFactorToken...)
 	return r.beginChallenge, nil
@@ -274,22 +266,6 @@ func (r *fakeRemote) Delete(_ context.Context, _ string) error {
 	err := r.deleteErr
 	r.mu.Unlock()
 	return err
-}
-
-func (r *fakeRemote) ListAttachments(_ context.Context, _ string) ([]vault.Attachment, error) {
-	return nil, nil
-}
-
-func (r *fakeRemote) DownloadAttachment(_ context.Context, _, _ string, _ io.Writer) error {
-	return nil
-}
-
-func (r *fakeRemote) UploadAttachment(_ context.Context, _ string, _ string, _ int64, _ io.Reader) (vault.Attachment, error) {
-	return vault.Attachment{}, nil
-}
-
-func (r *fakeRemote) DeleteAttachment(_ context.Context, _, _ string) error {
-	return nil
 }
 
 func (r *fakeRemote) ExportSession(_ context.Context) (session.UnlockMaterial, session.TokenBundle, error) {
@@ -3383,6 +3359,29 @@ func TestLoginFallsBackToPromptWhenRememberedTwoFactorNeedsFreshCode(t *testing.
 	require.Equal(t, storedRemembered, fr.beginRememberedTwoFactor)
 	require.Equal(t, auth.TwoFactorProviderAuthenticator, fr.completeProvider)
 	require.Equal(t, "123456", fr.completeCode)
+}
+
+func TestLoginTwoFactorChallengeWithoutPromptFails(t *testing.T) {
+	fr := &fakeRemote{
+		beginChallenge: auth.NewTwoFactorChallenge([]auth.TwoFactorProvider{auth.TwoFactorProviderAuthenticator}, nil, nil),
+	}
+	svc := NewService(Deps{
+		Remote:      fr,
+		Cache:       &fakeCache{loadErr: os.ErrNotExist},
+		SecretBox:   &fakeSecretBox{},
+		Credentials: &fakeCredentialStore{},
+		BootID:      &fakeBootID{id: "boot-no-prompt"},
+		PINEnvelope: &fakePINEnvelope{result: session.UnlockEnvelope{Version: session.UnlockEnvelopeVersion, Salt: []byte("salt")}},
+		Config:      coreconfig.Default(),
+	})
+
+	err := svc.Login(context.Background(), auth.LoginInput{
+		Email:    "user@example.com",
+		Password: "master-password",
+		PIN:      "1234",
+	})
+	require.ErrorContains(t, err, "two-factor authentication required")
+	require.Empty(t, fr.completeCode)
 }
 
 func TestLoginFailsWhenRememberedTwoFactorTokenLoadErrors(t *testing.T) {

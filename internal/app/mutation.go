@@ -48,7 +48,7 @@ type mutationSpec struct {
 
 	// call performs the remote operation. The returned item is zero for kinds
 	// that return none.
-	call func(ctx context.Context, r out.RemoteVault, m mutation) (vault.Item, error)
+	call func(ctx context.Context, r out.RemoteItems, m mutation) (vault.Item, error)
 
 	// stage prepares m for queueing offline (assigns IDs, stamps revision).
 	// nil means m is queued unchanged.
@@ -129,7 +129,7 @@ var createMutation = &mutationSpec{
 	syncedMessage:        "item created remotely",
 	pendingMessage:       "item queued for creation",
 	returnsItem:          true,
-	call: func(ctx context.Context, r out.RemoteVault, m mutation) (vault.Item, error) {
+	call: func(ctx context.Context, r out.RemoteItems, m mutation) (vault.Item, error) {
 		return r.Create(ctx, m.Item)
 	},
 	stage: func(m mutation, now time.Time, newLocalID func() string) mutation {
@@ -152,7 +152,7 @@ var updateMutation = &mutationSpec{
 	syncedMessage:        "item updated remotely",
 	pendingMessage:       "item queued for update",
 	returnsItem:          true,
-	call: func(ctx context.Context, r out.RemoteVault, m mutation) (vault.Item, error) {
+	call: func(ctx context.Context, r out.RemoteItems, m mutation) (vault.Item, error) {
 		return r.Update(ctx, m.ID, m.Item)
 	},
 	stage: func(m mutation, now time.Time, _ func() string) mutation {
@@ -172,7 +172,7 @@ var trashMutation = &mutationSpec{
 	remoteLocalOperation: "remote_trash_local_update",
 	syncedMessage:        "item trashed remotely",
 	pendingMessage:       "item queued for trash",
-	call: func(ctx context.Context, r out.RemoteVault, m mutation) (vault.Item, error) {
+	call: func(ctx context.Context, r out.RemoteItems, m mutation) (vault.Item, error) {
 		return vault.Item{}, r.Trash(ctx, m.ID)
 	},
 	apply: func(items []vault.Item, m mutation, o mutationOutcome) ([]vault.Item, vault.Item) {
@@ -189,7 +189,7 @@ var restoreMutation = &mutationSpec{
 	syncedMessage:        "item restored remotely",
 	pendingMessage:       "item queued for restore",
 	returnsItem:          true,
-	call: func(ctx context.Context, r out.RemoteVault, m mutation) (vault.Item, error) {
+	call: func(ctx context.Context, r out.RemoteItems, m mutation) (vault.Item, error) {
 		return r.Restore(ctx, m.ID)
 	},
 	apply: func(items []vault.Item, m mutation, o mutationOutcome) ([]vault.Item, vault.Item) {
@@ -211,7 +211,7 @@ var deleteMutation = &mutationSpec{
 	remoteLocalOperation: "remote_delete_local_update",
 	syncedMessage:        "item deleted remotely",
 	pendingMessage:       "item queued for deletion",
-	call: func(ctx context.Context, r out.RemoteVault, m mutation) (vault.Item, error) {
+	call: func(ctx context.Context, r out.RemoteItems, m mutation) (vault.Item, error) {
 		return vault.Item{}, r.Delete(ctx, m.ID)
 	},
 	apply: func(items []vault.Item, m mutation, _ mutationOutcome) ([]vault.Item, vault.Item) {
