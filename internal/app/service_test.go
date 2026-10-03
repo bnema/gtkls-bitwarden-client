@@ -3515,6 +3515,86 @@ func TestUnlockWithPINRestoresSessionAndInstallsCacheKey(t *testing.T) {
 	cs.mu.Unlock()
 }
 
+func TestUnlockWithPINWithoutCacheKeyStaysResidentAndKeepsMutations(t *testing.T) {
+	email := "user@example.com"
+	pin := "1234"
+	ref := session.AccountRef{Email: email, ServerURL: "https://vault.bitwarden.com"}
+	bootID := "boot-abc"
+
+	validBundle := session.TokenBundle{
+		AccountID:    "acct-1",
+		Email:        ref.Email,
+		ServerURL:    ref.ServerURL,
+		AccessToken:  []byte("at"),
+		RefreshToken: []byte("rt"),
+		TokenType:    "Bearer",
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+
+	envelope := session.UnlockEnvelope{
+		Version:        session.UnlockEnvelopeVersion,
+		Account:        ref,
+		AccountID:      "acct-1",
+		BootID:         bootID,
+		ExpiresAt:      time.Now().Add(time.Hour),
+		FailedAttempts: 2,
+		PINMaxFailures: 5,
+		BackoffUntil:   time.Now().Add(-time.Hour), // past backoff
+	}
+
+	material := session.UnlockMaterial{
+		CacheKey: nil,
+		UserKey:  []byte("user-key"),
+	}
+
+	// Reset envelope after successful open.
+	resetEnvelope := envelope.Clone()
+	resetEnvelope.FailedAttempts = 0
+	resetEnvelope.BackoffUntil = time.Time{}
+
+	cs := &fakeCredentialStore{
+		tokenBundle: validBundle,
+		envelope:    envelope,
+	}
+	pe := &fakePINEnvelope{
+		openMaterial: material,
+		openUpdated:  resetEnvelope,
+		openErr:      nil,
+	}
+	boot := &fakeBootID{id: bootID}
+	fr := &fakeRemote{}
+
+	cfg := coreconfig.Default()
+	cfg.Bitwarden.Email = email
+
+	svc := NewService(Deps{
+		Config:      cfg,
+		Remote:      fr,
+		Credentials: cs,
+		BootID:      boot,
+		PINEnvelope: pe,
+	})
+
+	err := svc.UnlockWithPIN(context.Background(), email, pin)
+	require.NoError(t, err)
+
+	svc.mu.Lock()
+	require.Equal(t, auth.LockStateUnlocked, svc.state)
+	require.Empty(t, svc.cacheKey)
+	require.Equal(t, sessionResident, svc.sessionMode, "no cache key: cache-only could not persist anything")
+	svc.mu.Unlock()
+
+	// An offline mutation must not be dropped: it lands in the resident state.
+	fr.createErr = errRemoteDown
+	created, err := svc.Create(context.Background(), vault.Item{Name: "Offline"})
+	require.NoError(t, err)
+	require.Len(t, svc.pendingMutationsForTest(), 1)
+	items, err := svc.Items(context.Background())
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.Equal(t, created.ID, items[0].ID)
+}
+
 func TestUnlockWithPINRestoresPersistedConflictsFromCache(t *testing.T) {
 	email := "user@example.com"
 	pin := "1234"

@@ -448,7 +448,13 @@ func (s *Service) UnlockWithPIN(ctx context.Context, email, pin string) (retErr 
 	s.cacheKey = make([]byte, len(material.CacheKey))
 	copy(s.cacheKey, material.CacheKey)
 	s.state = auth.LockStateUnlocked
-	s.sessionMode = sessionCacheOnly
+	// Cache-only needs a cache key: without one nothing could be persisted, so
+	// an unlock whose material carries no cache key stays resident.
+	mode := sessionCacheOnly
+	if len(material.CacheKey) == 0 {
+		mode = sessionResident
+	}
+	s.sessionMode = mode
 	if s.backgroundSyncEnabledLocked() {
 		workerCtx, cancel = context.WithCancel(context.WithoutCancel(ctx))
 		s.cancelWorkers = cancel
@@ -467,7 +473,7 @@ func (s *Service) UnlockWithPIN(ctx context.Context, email, pin string) (retErr 
 	}
 
 	if startWorker {
-		s.startBackgroundSyncWorker(workerCtx, sessionCacheOnly)
+		s.startBackgroundSyncWorker(workerCtx, mode)
 	}
 
 	return nil
