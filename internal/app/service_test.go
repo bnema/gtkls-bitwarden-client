@@ -168,10 +168,6 @@ func (r *fakeRemote) CompleteTwoFactorLogin(_ context.Context, _ *auth.TwoFactor
 	return nil
 }
 
-func (r *fakeRemote) CompleteTwoFactor(_ context.Context, _, _ string, _ bool) error {
-	return nil
-}
-
 func (r *fakeRemote) Lock(_ context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

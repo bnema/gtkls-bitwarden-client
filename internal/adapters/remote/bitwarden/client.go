@@ -26,9 +26,8 @@ var _ out.RemoteVault = (*Client)(nil)
 
 // Package sentinel errors for operations the SDK does not support.
 var (
-	// ErrTwoFactorUnsupported is returned by CompleteTwoFactor because the
-	// current RemoteVault port does not expose a two-factor challenge handle;
-	// callers should use BeginLogin/CompleteLogin on the SDK directly.
+	// ErrTwoFactorUnsupported is returned by CompleteTwoFactorLogin when the
+	// challenge is nil or does not carry an SDK challenge handle.
 	ErrTwoFactorUnsupported = errors.New("bitwarden: two-factor challenge not exposed by port, use BeginLogin/CompleteLogin directly")
 
 	// ErrAttachmentsNotSupported is returned by ListAttachments because the
@@ -241,14 +240,6 @@ func (c *Client) CompleteTwoFactorLogin(ctx context.Context, challenge *coreauth
 		Remember:  remember,
 	})
 	return err
-}
-
-// CompleteTwoFactor returns ErrTwoFactorUnsupported because callers need the
-// challenge returned by BeginLogin.
-func (c *Client) CompleteTwoFactor(ctx context.Context, _, _ string, _ bool) (retErr error) {
-	log, started := logRemoteStart(ctx, "complete_two_factor")
-	defer func() { logRemoteFinish(log, started, retErr) }()
-	return ErrTwoFactorUnsupported
 }
 
 const defaultDeviceIdentifier = "gtkls-bitwarden-client"
