@@ -59,29 +59,10 @@ func (f *fakeAuthService) Login(_ context.Context, input coreauth.LoginInput) er
 	}
 	return nil
 }
-func (f *fakeAuthService) Unlock(_ context.Context, email, password string) error {
-	f.email = email
-	f.password = password
-	return nil
-}
-func (f *fakeAuthService) UnlockWithTwoFactor(ctx context.Context, email, password string, prompt coreauth.TwoFactorPrompt) error {
-	if f.requireTwoFactor && prompt != nil {
-		_, code, remember, err := prompt(ctx, []coreauth.TwoFactorProvider{coreauth.TwoFactorProviderAuthenticator})
-		if err != nil {
-			return err
-		}
-		f.twoFactorCode = code
-		f.twoFactorRemember = remember
-	}
-	return f.Unlock(ctx, email, password)
-}
 func (f *fakeAuthService) UnlockWithPIN(_ context.Context, email, pin string) error {
 	f.email = email
 	f.pin = pin
 	return nil
-}
-func (f *fakeAuthService) UnlockAndCreateEnvelope(ctx context.Context, email, password, pin string, prompt coreauth.TwoFactorPrompt) error {
-	return f.UnlockWithPIN(ctx, email, pin)
 }
 func (f *fakeAuthService) RenewUnlockEnvelope(_ context.Context, _ coreauth.RenewEnvelopeInput) error {
 	return nil

@@ -94,7 +94,7 @@ func TestIntegrationOfflineUnlockFromEncryptedCache(t *testing.T) {
 	})
 
 	// Unlock using the same password.
-	err = svc.Unlock(context.Background(), "user@test.com", password)
+	err = svc.unlock(context.Background(), "user@test.com", password, nil)
 	require.NoError(t, err)
 
 	// Search must find the cached item.
@@ -394,7 +394,7 @@ func TestIntegrationRelockCancelsStaleWorker(t *testing.T) {
 	})
 
 	// Unlock (this starts sync worker).
-	err := svc.Unlock(context.Background(), "user@test.com", "password")
+	err := svc.unlock(context.Background(), "user@test.com", "password", nil)
 	require.NoError(t, err)
 
 	// Wait for sync worker to reach Sync (blocked on syncBlockCh).

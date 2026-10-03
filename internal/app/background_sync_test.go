@@ -186,7 +186,7 @@ func TestUnlockLeavesResidentWorkerDisabledWhenBackgroundSyncDisabled(t *testing
 	cfg.Security.BackgroundSync.Enabled = false
 
 	svc := NewService(Deps{Config: cfg, Remote: &fakeRemote{}})
-	require.NoError(t, svc.Unlock(context.Background(), "user@example.com", "master-password"))
+	require.NoError(t, svc.unlock(context.Background(), "user@example.com", "master-password", nil))
 
 	svc.mu.Lock()
 	require.Equal(t, backgroundSyncDisabled, svc.backgroundSyncMode)

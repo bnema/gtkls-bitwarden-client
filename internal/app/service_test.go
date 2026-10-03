@@ -915,7 +915,7 @@ func TestUnlockInstallsCacheIndexBeforeSync(t *testing.T) {
 		SecretBox: &fakeSecretBox{},
 	})
 
-	err := svc.Unlock(context.Background(), "user@test.com", "mypassword")
+	err := svc.unlock(context.Background(), "user@test.com", "mypassword", nil)
 	require.NoError(t, err)
 
 	// Search should immediately return the cached GitHub item.
@@ -944,7 +944,7 @@ func TestLockClearsState(t *testing.T) {
 	})
 
 	// Unlock
-	err := svc.Unlock(context.Background(), "user@test.com", "pw")
+	err := svc.unlock(context.Background(), "user@test.com", "pw", nil)
 	require.NoError(t, err)
 
 	// Verify unlocked state
@@ -988,7 +988,7 @@ func TestEventsEmittedForUnlock(t *testing.T) {
 		SecretBox: &fakeSecretBox{},
 	})
 
-	err := svc.Unlock(context.Background(), "user@test.com", "pw")
+	err := svc.unlock(context.Background(), "user@test.com", "pw", nil)
 	require.NoError(t, err)
 
 	// Collect events with a generous timeout.
@@ -1388,7 +1388,7 @@ func TestUnlockLoadsOutboxFromCacheAndOutboxStore(t *testing.T) {
 		Outbox:    fo,
 	})
 
-	err := svc.Unlock(context.Background(), "user@test.com", "mypassword")
+	err := svc.unlock(context.Background(), "user@test.com", "mypassword", nil)
 	require.NoError(t, err)
 
 	// Verify both outbox sources are loaded.
@@ -1453,7 +1453,7 @@ func TestUnlockDeduplicatesOutboxMutations(t *testing.T) {
 		Outbox:    fo,
 	})
 
-	err := svc.Unlock(context.Background(), "user@test.com", "mypassword")
+	err := svc.unlock(context.Background(), "user@test.com", "mypassword", nil)
 	require.NoError(t, err)
 
 	// Only one m1 and one m3 should be present (deduplicated).
@@ -1483,7 +1483,7 @@ func TestLockZeroesCacheKey(t *testing.T) {
 		SecretBox: &fakeSecretBox{},
 	})
 
-	err := svc.Unlock(context.Background(), "user@test.com", "mypassword")
+	err := svc.unlock(context.Background(), "user@test.com", "mypassword", nil)
 	require.NoError(t, err)
 
 	// Capture the cacheKey slice reference and copy its contents before Lock.
@@ -2089,7 +2089,7 @@ func TestShutdownWaitsForAsyncCacheSave(t *testing.T) {
 	}
 	svc := NewService(Deps{Remote: remote, Cache: cacheStore, SecretBox: &fakeSecretBox{}, Config: coreconfig.Default()})
 
-	require.NoError(t, svc.Unlock(context.Background(), "me@example.com", "password"))
+	require.NoError(t, svc.unlock(context.Background(), "me@example.com", "password", nil))
 	require.Eventually(t, func() bool {
 		select {
 		case <-cacheStore.saveStarted:
@@ -2161,7 +2161,7 @@ func TestLockDuringUnlockPreventsInstall(t *testing.T) {
 	// Start Unlock in a goroutine.
 	unlockErrCh := make(chan error, 1)
 	go func() {
-		unlockErrCh <- svc.Unlock(context.Background(), "user@test.com", "pw")
+		unlockErrCh <- svc.unlock(context.Background(), "user@test.com", "pw", nil)
 	}()
 
 	// Wait for Unlock to reach Login (blocked).
@@ -4593,127 +4593,6 @@ func TestLoginRejectsShortPIN(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// UnlockAndCreateEnvelope tests (finding #1)
-// ---------------------------------------------------------------------------
-
-func TestUnlockAndCreateEnvelopeStoresBundleAndEnvelope(t *testing.T) {
-	email := "user@example.com"
-	password := "master-password"
-	pin := "1234"
-	ref := session.AccountRef{Email: email, ServerURL: "https://vault.bitwarden.com"}
-	bootID := "boot-abc"
-
-	fr := &fakeRemote{
-		exportMaterial: session.UnlockMaterial{UserKey: []byte("user-key-bytes")},
-		exportTokens: session.TokenBundle{
-			AccountID:    "acct-1",
-			AccessToken:  []byte("access-token"),
-			RefreshToken: []byte("refresh-token"),
-			TokenType:    "Bearer",
-			ExpiresAt:    time.Now().Add(time.Hour),
-		},
-	}
-
-	cs := &fakeCredentialStore{}
-	pe := &fakePINEnvelope{
-		result: session.UnlockEnvelope{Version: session.UnlockEnvelopeVersion, BootID: bootID},
-	}
-	boot := &fakeBootID{id: bootID}
-	fakCache := &fakeCache{loadErr: os.ErrNotExist}
-
-	svc := NewService(Deps{
-		Remote:      fr,
-		Cache:       fakCache,
-		SecretBox:   &fakeSecretBox{},
-		Credentials: cs,
-		BootID:      boot,
-		PINEnvelope: pe,
-		Config:      coreconfig.Default(),
-	})
-
-	err := svc.UnlockAndCreateEnvelope(context.Background(), email, password, pin, nil)
-	require.NoError(t, err)
-
-	// Verify remote login was called.
-	fr.mu.Lock()
-	require.True(t, fr.loginCalled)
-	fr.mu.Unlock()
-
-	// Verify ExportSession was called.
-	require.Equal(t, int32(1), fr.exportCallCnt.Load())
-
-	// Token bundle should be saved.
-	cs.mu.Lock()
-	require.Equal(t, 1, cs.saveTokenCalled)
-	require.Equal(t, 1, cs.savePINCalls)
-	require.Equal(t, 1, cs.saveEnvCalled)
-	cs.mu.Unlock()
-
-	// PIN profile should be saved and verify the PIN.
-	cs.mu.Lock()
-	savedProfile := cs.savedPINProfile
-	cs.mu.Unlock()
-	require.True(t, savedProfile.VerifyPIN(pin), "saved profile should verify correct PIN")
-
-	// PIN envelope should have been created with EnvelopeKey secret (not raw PIN).
-	pe.mu.Lock()
-	require.Equal(t, 1, pe.createCallCnt)
-	require.Equal(t, ref, pe.ref)
-	require.NotEqual(t, pin, pe.pin, "envelope Create should use EnvelopeKey secret, not raw PIN")
-	require.Len(t, pe.pin, 64, "EnvelopeKey secret should be 64 hex chars (32 bytes)")
-	require.Equal(t, bootID, pe.bootID)
-	pe.mu.Unlock()
-
-	// Service should remain unlocked (post-enrollment, no error).
-	svc.mu.Lock()
-	require.Equal(t, auth.LockStateUnlocked, svc.state)
-	svc.mu.Unlock()
-}
-
-func TestUnlockAndCreateEnvelopeFailSavesLeavesLocked(t *testing.T) {
-	email := "user@example.com"
-	password := "master-password"
-	pin := "1234"
-	bootID := "boot-abc"
-
-	fr := &fakeRemote{
-		exportMaterial: session.UnlockMaterial{UserKey: []byte("user-key-bytes")},
-		exportTokens: session.TokenBundle{
-			AccountID:    "acct-1",
-			AccessToken:  []byte("access-token"),
-			RefreshToken: []byte("refresh-token"),
-			TokenType:    "Bearer",
-			ExpiresAt:    time.Now().Add(time.Hour),
-		},
-	}
-
-	cs := &fakeCredentialStore{saveTokenErr: fmt.Errorf("keyring write error")}
-	pe := &fakePINEnvelope{
-		result: session.UnlockEnvelope{Version: session.UnlockEnvelopeVersion, BootID: bootID},
-	}
-	boot := &fakeBootID{id: bootID}
-	fakCache := &fakeCache{loadErr: os.ErrNotExist}
-
-	svc := NewService(Deps{
-		Remote:      fr,
-		Cache:       fakCache,
-		SecretBox:   &fakeSecretBox{},
-		Credentials: cs,
-		BootID:      boot,
-		PINEnvelope: pe,
-		Config:      coreconfig.Default(),
-	})
-
-	err := svc.UnlockAndCreateEnvelope(context.Background(), email, password, pin, nil)
-	require.Error(t, err)
-
-	// Service should be locked after cleanup.
-	svc.mu.Lock()
-	require.Equal(t, auth.LockStateLocked, svc.state)
-	svc.mu.Unlock()
-}
-
-// ---------------------------------------------------------------------------
 // Phase 3: Login profile save failure tests
 // ---------------------------------------------------------------------------
 
@@ -5123,7 +5002,7 @@ func TestSoftLockClearsResidentState(t *testing.T) {
 	})
 
 	// Unlock
-	err := svc.Unlock(context.Background(), "user@test.com", "pw")
+	err := svc.unlock(context.Background(), "user@test.com", "pw", nil)
 	require.NoError(t, err)
 
 	// Verify unlocked state
@@ -5251,7 +5130,7 @@ func TestLockCompatibilityWrapper(t *testing.T) {
 		SecretBox: &fakeSecretBox{},
 	})
 
-	err := svc.Unlock(context.Background(), "user@test.com", "pw")
+	err := svc.unlock(context.Background(), "user@test.com", "pw", nil)
 	require.NoError(t, err)
 
 	_, err = svc.Search(context.Background(), "git", 10)
