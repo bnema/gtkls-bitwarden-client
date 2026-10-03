@@ -17,10 +17,7 @@ func (v *View) buildGeneratorUI() {
 
 	backBtn := gtklib.NewButtonWithLabel("← Back")
 	backCb := func(_ gtklib.Button) {
-		v.mu.Lock()
-		v.state.Back()
-		v.mu.Unlock()
-		v.render()
+		v.run(func(c *Controller) []Effect { return c.Back() })
 		v.GrabFocus()
 	}
 	v.retain(backCb)
@@ -127,7 +124,7 @@ func (v *View) generatePasswordFromControls() {
 	password, err := v.generatePasswordFromCurrentOptions()
 	if err != nil {
 		v.mu.Lock()
-		v.state.SetStatus(Status{Text: err.Error(), Error: err.Error()})
+		v.ctrl.State.SetStatus(Status{Text: err.Error(), Error: err.Error()})
 		v.mu.Unlock()
 		v.renderStatus()
 		return
@@ -135,7 +132,7 @@ func (v *View) generatePasswordFromControls() {
 
 	v.generatorOutput.SetText(password)
 	v.mu.Lock()
-	v.state.SetStatus(Status{Text: "Generated password"})
+	v.ctrl.State.SetStatus(Status{Text: "Generated password"})
 	v.mu.Unlock()
 	v.renderStatus()
 }
@@ -144,10 +141,20 @@ func (v *View) generatePasswordFromCurrentOptions() (string, error) {
 	return passwordgen.Generate(v.generatorOptions())
 }
 
+// prefillPassword generates a password for a new login form, logging failures
+// (the controller surfaces the error text in the status bar).
+func (v *View) prefillPassword() (string, error) {
+	password, err := v.generatePasswordFromCurrentOptions()
+	if err != nil {
+		logOverlayError(v.ctx, "prefill_generated_password", err)
+	}
+	return password, err
+}
+
 func (v *View) copyGeneratedPassword() {
 	if v.generatorOutput == nil || v.clipboard == nil {
 		v.mu.Lock()
-		v.state.SetStatus(Status{Text: genericOperationError, Error: genericOperationError})
+		v.ctrl.State.SetStatus(Status{Text: genericOperationError, Error: genericOperationError})
 		v.mu.Unlock()
 		v.renderStatus()
 		return
@@ -156,7 +163,7 @@ func (v *View) copyGeneratedPassword() {
 	text := v.generatorOutput.GetText()
 	if text == "" {
 		v.mu.Lock()
-		v.state.SetStatus(Status{Text: "Generate a password first"})
+		v.ctrl.State.SetStatus(Status{Text: "Generate a password first"})
 		v.mu.Unlock()
 		v.renderStatus()
 		return
@@ -172,7 +179,7 @@ func (v *View) copyGeneratedPassword() {
 			logOverlayError(v.ctx, "copy_generated_password", err)
 			idleAddOnce(func() {
 				v.mu.Lock()
-				v.state.SetStatus(Status{Text: genericOperationError, Error: genericOperationError})
+				v.ctrl.State.SetStatus(Status{Text: genericOperationError, Error: genericOperationError})
 				v.mu.Unlock()
 				v.renderStatus()
 			})
@@ -181,7 +188,7 @@ func (v *View) copyGeneratedPassword() {
 
 		idleAddOnce(func() {
 			v.mu.Lock()
-			v.state.SetStatus(Status{Text: "Password copied"})
+			v.ctrl.State.SetStatus(Status{Text: "Password copied"})
 			v.mu.Unlock()
 			v.renderStatus()
 		})

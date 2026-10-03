@@ -47,7 +47,12 @@ type AppService interface {
 	SoftLock(ctx context.Context) error
 	SetBackgroundSyncSuspended(ctx context.Context, suspended bool) error
 	SyncNow(ctx context.Context) error
+	// HardLock soft-locks and deletes the unlock envelope for email, keeping the
+	// token bundle and PIN profile so the envelope can be renewed.
 	HardLock(ctx context.Context, email string) error
+	// ForgetAccount soft-locks and deletes every stored credential (unlock
+	// envelope, token bundle, PIN profile) for email: the "sign out" operation.
+	ForgetAccount(ctx context.Context, email string) error
 	Search(ctx context.Context, query string, limit int) ([]vault.ScoredItem, error)
 	Items(ctx context.Context) ([]vault.Item, error)
 	Conflicts(ctx context.Context) ([]sync.Conflict, error)

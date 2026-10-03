@@ -21,14 +21,20 @@ import (
 	"github.com/bnema/zerowrap"
 )
 
-// Compile-time check that Client satisfies out.RemoteVault.
-var _ out.RemoteVault = (*Client)(nil)
+// Compile-time checks that Client satisfies every remote port.
+var (
+	_ out.RemoteAuth        = (*Client)(nil)
+	_ out.RemoteSession     = (*Client)(nil)
+	_ out.RemoteSync        = (*Client)(nil)
+	_ out.RemoteItems       = (*Client)(nil)
+	_ out.RemoteAttachments = (*Client)(nil)
+	_ out.RemoteVault       = (*Client)(nil)
+)
 
 // Package sentinel errors for operations the SDK does not support.
 var (
-	// ErrTwoFactorUnsupported is returned by CompleteTwoFactor because the
-	// current RemoteVault port does not expose a two-factor challenge handle;
-	// callers should use BeginLogin/CompleteLogin on the SDK directly.
+	// ErrTwoFactorUnsupported is returned by CompleteTwoFactorLogin when the
+	// challenge is nil or does not carry an SDK challenge handle.
 	ErrTwoFactorUnsupported = errors.New("bitwarden: two-factor challenge not exposed by port, use BeginLogin/CompleteLogin directly")
 
 	// ErrAttachmentsNotSupported is returned by ListAttachments because the
@@ -189,16 +195,6 @@ func classifySDKError(operation string, err error) error {
 	}
 }
 
-// Login authenticates with master password.
-func (c *Client) Login(ctx context.Context, email, password string, rememberedTwoFactorToken []byte) (retErr error) {
-	log, started := logRemoteStart(ctx, "login")
-	defer func() { logRemoteFinish(log, started, retErr) }()
-	if c == nil || c.sdk == nil {
-		return errors.New("bitwarden adapter: client or SDK is nil")
-	}
-	return c.sdk.Login(ctx, c.loginOptions(email, password, rememberedTwoFactorToken))
-}
-
 // BeginLogin starts login and returns a two-factor challenge when required.
 func (c *Client) BeginLogin(ctx context.Context, email, password string, rememberedTwoFactorToken []byte) (challengeResult *coreauth.TwoFactorChallenge, retErr error) {
 	log, started := logRemoteStart(ctx, "begin_login")
@@ -241,14 +237,6 @@ func (c *Client) CompleteTwoFactorLogin(ctx context.Context, challenge *coreauth
 		Remember:  remember,
 	})
 	return err
-}
-
-// CompleteTwoFactor returns ErrTwoFactorUnsupported because callers need the
-// challenge returned by BeginLogin.
-func (c *Client) CompleteTwoFactor(ctx context.Context, _, _ string, _ bool) (retErr error) {
-	log, started := logRemoteStart(ctx, "complete_two_factor")
-	defer func() { logRemoteFinish(log, started, retErr) }()
-	return ErrTwoFactorUnsupported
 }
 
 const defaultDeviceIdentifier = "gtkls-bitwarden-client"

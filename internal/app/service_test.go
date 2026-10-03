@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -94,7 +93,6 @@ type fakeRemote struct {
 	beginChallenge           *auth.TwoFactorChallenge
 	beginCalled              bool
 	beginRememberedTwoFactor []byte
-	loginRememberedTwoFactor []byte
 	completeProvider         auth.TwoFactorProvider
 	completeCode             string
 
@@ -124,7 +122,7 @@ type fakeRemote struct {
 	restoreSessionErr error
 }
 
-func (r *fakeRemote) Login(ctx context.Context, email, password string, rememberedTwoFactorToken []byte) error {
+func (r *fakeRemote) BeginLogin(ctx context.Context, email, password string, rememberedTwoFactorToken []byte) (*auth.TwoFactorChallenge, error) {
 	r.mu.Lock()
 	onLogin := r.onLogin
 	enterCh := r.loginEnterCh
@@ -139,22 +137,16 @@ func (r *fakeRemote) Login(ctx context.Context, email, password string, remember
 	}
 
 	if onLogin != nil {
-		return onLogin(ctx, email, password)
+		if err := onLogin(ctx, email, password); err != nil {
+			return nil, err
+		}
 	}
 
-	r.mu.Lock()
-	r.loginCalled = true
-	r.loginRememberedTwoFactor = append([]byte(nil), rememberedTwoFactorToken...)
-	r.mu.Unlock()
-	return nil
-}
-
-func (r *fakeRemote) BeginLogin(ctx context.Context, email, password string, rememberedTwoFactorToken []byte) (*auth.TwoFactorChallenge, error) {
-	if err := r.Login(ctx, email, password, rememberedTwoFactorToken); err != nil {
-		return nil, err
-	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if onLogin == nil {
+		r.loginCalled = true
+	}
 	r.beginCalled = true
 	r.beginRememberedTwoFactor = append([]byte(nil), rememberedTwoFactorToken...)
 	return r.beginChallenge, nil
@@ -165,10 +157,6 @@ func (r *fakeRemote) CompleteTwoFactorLogin(_ context.Context, _ *auth.TwoFactor
 	defer r.mu.Unlock()
 	r.completeProvider = provider
 	r.completeCode = code
-	return nil
-}
-
-func (r *fakeRemote) CompleteTwoFactor(_ context.Context, _, _ string, _ bool) error {
 	return nil
 }
 
@@ -278,22 +266,6 @@ func (r *fakeRemote) Delete(_ context.Context, _ string) error {
 	err := r.deleteErr
 	r.mu.Unlock()
 	return err
-}
-
-func (r *fakeRemote) ListAttachments(_ context.Context, _ string) ([]vault.Attachment, error) {
-	return nil, nil
-}
-
-func (r *fakeRemote) DownloadAttachment(_ context.Context, _, _ string, _ io.Writer) error {
-	return nil
-}
-
-func (r *fakeRemote) UploadAttachment(_ context.Context, _ string, _ string, _ int64, _ io.Reader) (vault.Attachment, error) {
-	return vault.Attachment{}, nil
-}
-
-func (r *fakeRemote) DeleteAttachment(_ context.Context, _, _ string) error {
-	return nil
 }
 
 func (r *fakeRemote) ExportSession(_ context.Context) (session.UnlockMaterial, session.TokenBundle, error) {
@@ -675,7 +647,7 @@ func TestConflictDetailCacheOnlyFetchesRemoteSummary(t *testing.T) {
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
-	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.sessionMode = sessionCacheOnly
 	svc.conflicts = []coresync.Conflict{{ID: "c1", ItemID: "item-1", MutationID: "m1", Reason: coresync.ConflictBothModified}}
 	svc.mu.Unlock()
 
@@ -714,7 +686,7 @@ func TestResolveConflictThenSyncNowRefreshesRemoteItems(t *testing.T) {
 	svc.items = []vault.Item{local}
 	svc.outbox = []coresync.OutboxMutation{{ID: "m1", Kind: coresync.MutationUpdate, ItemID: "item-1", Payload: []byte(`{"name":"Local"}`)}}
 	svc.mu.Unlock()
-	svc.syncOnce(context.Background())
+	require.NoError(t, svc.syncOnce(context.Background()))
 	conflicts := svc.conflictsForTest()
 	require.Len(t, conflicts, 1)
 
@@ -743,7 +715,7 @@ func TestResolveConflictKeepLocalThenSyncNowReplaysOutbox(t *testing.T) {
 	svc.items = []vault.Item{local}
 	svc.outbox = []coresync.OutboxMutation{{ID: "m1", Kind: coresync.MutationUpdate, ItemID: "item-1", BaseRevision: "old-rev", Payload: []byte(`{"id":"item-1","name":"Local","type":"login"}`)}}
 	svc.mu.Unlock()
-	svc.syncOnce(context.Background())
+	require.NoError(t, svc.syncOnce(context.Background()))
 	conflicts := svc.conflictsForTest()
 	require.Len(t, conflicts, 1)
 
@@ -790,15 +762,17 @@ func TestResolveConflictKeepLocalThenSyncNowReplaysCacheOnlyOutbox(t *testing.T)
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
-	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.sessionMode = sessionCacheOnly
 	svc.conflicts = []coresync.Conflict{conflict}
 	svc.mu.Unlock()
 
 	require.NoError(t, svc.ResolveConflict(context.Background(), conflict.ID, coresync.ResolutionKeepLocal))
 	require.NoError(t, svc.SyncNow(context.Background()))
 
-	items, _, outboxAfter, err := svc.loadCachedVaultWithKey(context.Background(), cacheKey)
+	cached, err := svc.vaultCache().Open(context.Background(), cacheKey)
 	require.NoError(t, err)
+	items := cached.Items
+	outboxAfter := cached.Outbox
 	require.Len(t, items, 1)
 	require.Equal(t, "Local Cache Replayed", items[0].Name)
 	require.Empty(t, outboxAfter)
@@ -826,15 +800,17 @@ func TestResolveConflictKeepLocalCacheOnlyFetchesRemoteRevisionWhenMissing(t *te
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
-	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.sessionMode = sessionCacheOnly
 	svc.conflicts = []coresync.Conflict{conflict}
 	svc.mu.Unlock()
 
 	require.NoError(t, svc.ResolveConflict(context.Background(), conflict.ID, coresync.ResolutionKeepLocal))
 	require.NoError(t, svc.SyncNow(context.Background()))
 
-	items, _, outboxAfter, err := svc.loadCachedVaultWithKey(context.Background(), cacheKey)
+	cached, err := svc.vaultCache().Open(context.Background(), cacheKey)
 	require.NoError(t, err)
+	items := cached.Items
+	outboxAfter := cached.Outbox
 	require.Len(t, items, 1)
 	require.Equal(t, "Local Cache Replayed", items[0].Name)
 	require.Empty(t, outboxAfter)
@@ -855,13 +831,14 @@ func TestSyncNowCacheOnlyUpdatesEncryptedCache(t *testing.T) {
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
-	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.sessionMode = sessionCacheOnly
 	svc.mu.Unlock()
 
 	require.NoError(t, svc.SyncNow(context.Background()))
 
-	items, _, _, err := svc.loadCachedVaultWithKey(context.Background(), cacheKey)
+	cached, err := svc.vaultCache().Open(context.Background(), cacheKey)
 	require.NoError(t, err)
+	items := cached.Items
 	require.Len(t, items, 1)
 	require.Equal(t, "Remote Cache", items[0].Name)
 }
@@ -890,7 +867,7 @@ func TestSyncNowReturnsCacheOnlySyncError(t *testing.T) {
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
-	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.sessionMode = sessionCacheOnly
 	svc.mu.Unlock()
 
 	err := svc.SyncNow(context.Background())
@@ -919,7 +896,7 @@ func TestUnlockInstallsCacheIndexBeforeSync(t *testing.T) {
 		SecretBox: &fakeSecretBox{},
 	})
 
-	err := svc.Unlock(context.Background(), "user@test.com", "mypassword")
+	err := svc.unlock(context.Background(), "user@test.com", "mypassword", nil)
 	require.NoError(t, err)
 
 	// Search should immediately return the cached GitHub item.
@@ -948,7 +925,7 @@ func TestLockClearsState(t *testing.T) {
 	})
 
 	// Unlock
-	err := svc.Unlock(context.Background(), "user@test.com", "pw")
+	err := svc.unlock(context.Background(), "user@test.com", "pw", nil)
 	require.NoError(t, err)
 
 	// Verify unlocked state
@@ -992,7 +969,7 @@ func TestEventsEmittedForUnlock(t *testing.T) {
 		SecretBox: &fakeSecretBox{},
 	})
 
-	err := svc.Unlock(context.Background(), "user@test.com", "pw")
+	err := svc.unlock(context.Background(), "user@test.com", "pw", nil)
 	require.NoError(t, err)
 
 	// Collect events with a generous timeout.
@@ -1122,7 +1099,7 @@ func TestSyncConflictMarksItem(t *testing.T) {
 	svc.mu.Unlock()
 
 	// Run sync.
-	svc.syncOnce(context.Background())
+	require.NoError(t, svc.syncOnce(context.Background()))
 
 	// Check item is marked as conflict.
 	svc.mu.Lock()
@@ -1158,7 +1135,7 @@ func TestSyncConflictDetectedEventIncludesCount(t *testing.T) {
 	}
 	svc.mu.Unlock()
 
-	svc.syncOnce(context.Background())
+	require.NoError(t, svc.syncOnce(context.Background()))
 
 	events := consumeEvents(t, svc.events, 50*time.Millisecond)
 	var conflictEvent Event
@@ -1318,7 +1295,7 @@ func TestLockCancelsSyncInstall(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		svc.syncOnce(ctx)
+		_ = svc.syncOnce(ctx)
 	})
 
 	// Wait for syncOnce to reach Remote.Sync (which blocks on syncBlockCh).
@@ -1392,7 +1369,7 @@ func TestUnlockLoadsOutboxFromCacheAndOutboxStore(t *testing.T) {
 		Outbox:    fo,
 	})
 
-	err := svc.Unlock(context.Background(), "user@test.com", "mypassword")
+	err := svc.unlock(context.Background(), "user@test.com", "mypassword", nil)
 	require.NoError(t, err)
 
 	// Verify both outbox sources are loaded.
@@ -1457,7 +1434,7 @@ func TestUnlockDeduplicatesOutboxMutations(t *testing.T) {
 		Outbox:    fo,
 	})
 
-	err := svc.Unlock(context.Background(), "user@test.com", "mypassword")
+	err := svc.unlock(context.Background(), "user@test.com", "mypassword", nil)
 	require.NoError(t, err)
 
 	// Only one m1 and one m3 should be present (deduplicated).
@@ -1487,7 +1464,7 @@ func TestLockZeroesCacheKey(t *testing.T) {
 		SecretBox: &fakeSecretBox{},
 	})
 
-	err := svc.Unlock(context.Background(), "user@test.com", "mypassword")
+	err := svc.unlock(context.Background(), "user@test.com", "mypassword", nil)
 	require.NoError(t, err)
 
 	// Capture the cacheKey slice reference and copy its contents before Lock.
@@ -1585,7 +1562,7 @@ func TestSyncReplaysOutboxBeforeClearing(t *testing.T) {
 	svc.rebuildIndexLocked()
 	svc.mu.Unlock()
 
-	svc.syncOnce(context.Background())
+	require.NoError(t, svc.syncOnce(context.Background()))
 
 	// Verify Create was called on remote.
 	select {
@@ -1640,7 +1617,7 @@ func TestSyncPreservesConcurrentOutboxMutations(t *testing.T) {
 	svc.rebuildIndexLocked()
 	svc.mu.Unlock()
 
-	svc.syncOnce(context.Background())
+	require.NoError(t, svc.syncOnce(context.Background()))
 
 	pending := svc.pendingMutationsForTest()
 	require.Len(t, pending, 1, "concurrent mutation should be preserved")
@@ -1673,7 +1650,7 @@ func TestSyncKeepsOutboxWhenReplayFails(t *testing.T) {
 	svc.rebuildIndexLocked()
 	svc.mu.Unlock()
 
-	svc.syncOnce(context.Background())
+	require.Error(t, svc.syncOnce(context.Background()))
 
 	// Verify outbox is still intact after replay failure.
 	pending := svc.pendingMutationsForTest()
@@ -1718,7 +1695,7 @@ func TestResolveConflictDuplicateLocalQueuesCreate(t *testing.T) {
 	svc.mu.Unlock()
 
 	// Run sync to trigger conflict detection.
-	svc.syncOnce(context.Background())
+	require.NoError(t, svc.syncOnce(context.Background()))
 
 	// Verify conflict was detected.
 	conflicts := svc.conflictsForTest()
@@ -1857,7 +1834,7 @@ func TestResolveConflictKeepRemoteInCacheOnlySessionUpdatesEncryptedCache(t *tes
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
-	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.sessionMode = sessionCacheOnly
 	svc.conflicts = []coresync.Conflict{{
 		ID:         conflictID,
 		ItemID:     localItem.ID,
@@ -1875,8 +1852,11 @@ func TestResolveConflictKeepRemoteInCacheOnlySessionUpdatesEncryptedCache(t *tes
 		t.Fatal("timed out waiting for cache save after conflict resolution")
 	}
 
-	items, folders, savedOutbox, err := svc.loadCachedVaultWithKey(context.Background(), cacheKey)
+	cached, err := svc.vaultCache().Open(context.Background(), cacheKey)
 	require.NoError(t, err)
+	items := cached.Items
+	folders := cached.Folders
+	savedOutbox := cached.Outbox
 	require.Len(t, items, 1)
 	require.Equal(t, remoteItem.Name, items[0].Name)
 	require.Equal(t, vault.SyncStatusSynced, items[0].SyncStatus)
@@ -1909,8 +1889,11 @@ func TestLoadCachedVaultWithKeyLoadsStandaloneOutboxWithoutCacheSnapshot(t *test
 		Outbox:    &fakeOutbox{loadData: pending},
 	})
 
-	items, folders, outbox, err := svc.loadCachedVaultWithKey(context.Background(), cacheKey)
+	cached, err := svc.vaultCache().Open(context.Background(), cacheKey)
 	require.NoError(t, err)
+	items := cached.Items
+	folders := cached.Folders
+	outbox := cached.Outbox
 	require.Empty(t, items)
 	require.Empty(t, folders)
 	require.Len(t, outbox, 1)
@@ -1970,7 +1953,7 @@ func TestResolveConflictKeepRemoteCacheOnlyUpdatesEncryptedCache(t *testing.T) {
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
-	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.sessionMode = sessionCacheOnly
 	svc.conflicts = []coresync.Conflict{{
 		ID:         localItem.ConflictID,
 		ItemID:     localItem.ID,
@@ -1986,8 +1969,11 @@ func TestResolveConflictKeepRemoteCacheOnlyUpdatesEncryptedCache(t *testing.T) {
 		return cacheStore.saveCalled > 0
 	}, time.Second, 10*time.Millisecond)
 
-	items, folders, outbox, err := svc.loadCachedVaultWithKey(context.Background(), cacheKey)
+	cached, err := svc.vaultCache().Open(context.Background(), cacheKey)
 	require.NoError(t, err)
+	items := cached.Items
+	folders := cached.Folders
+	outbox := cached.Outbox
 	require.Len(t, items, 1)
 	require.Equal(t, remoteItem.Name, items[0].Name)
 	require.Equal(t, vault.SyncStatusSynced, items[0].SyncStatus)
@@ -2042,7 +2028,7 @@ func TestResolveConflictCacheOnlyCleanupIsIdempotent(t *testing.T) {
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
-	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.sessionMode = sessionCacheOnly
 	svc.conflicts = []coresync.Conflict{{
 		ID:         conflictID,
 		ItemID:     localItem.ID,
@@ -2093,7 +2079,7 @@ func TestShutdownWaitsForAsyncCacheSave(t *testing.T) {
 	}
 	svc := NewService(Deps{Remote: remote, Cache: cacheStore, SecretBox: &fakeSecretBox{}, Config: coreconfig.Default()})
 
-	require.NoError(t, svc.Unlock(context.Background(), "me@example.com", "password"))
+	require.NoError(t, svc.unlock(context.Background(), "me@example.com", "password", nil))
 	require.Eventually(t, func() bool {
 		select {
 		case <-cacheStore.saveStarted:
@@ -2165,7 +2151,7 @@ func TestLockDuringUnlockPreventsInstall(t *testing.T) {
 	// Start Unlock in a goroutine.
 	unlockErrCh := make(chan error, 1)
 	go func() {
-		unlockErrCh <- svc.Unlock(context.Background(), "user@test.com", "pw")
+		unlockErrCh <- svc.unlock(context.Background(), "user@test.com", "pw", nil)
 	}()
 
 	// Wait for Unlock to reach Login (blocked).
@@ -3375,6 +3361,30 @@ func TestLoginFallsBackToPromptWhenRememberedTwoFactorNeedsFreshCode(t *testing.
 	require.Equal(t, "123456", fr.completeCode)
 }
 
+func TestLoginTwoFactorChallengeWithoutPromptFails(t *testing.T) {
+	fr := &fakeRemote{
+		beginChallenge: auth.NewTwoFactorChallenge([]auth.TwoFactorProvider{auth.TwoFactorProviderAuthenticator}, nil, nil),
+	}
+	svc := NewService(Deps{
+		Remote:      fr,
+		Cache:       &fakeCache{loadErr: os.ErrNotExist},
+		SecretBox:   &fakeSecretBox{},
+		Credentials: &fakeCredentialStore{},
+		BootID:      &fakeBootID{id: "boot-no-prompt"},
+		PINEnvelope: &fakePINEnvelope{result: session.UnlockEnvelope{Version: session.UnlockEnvelopeVersion, Salt: []byte("salt")}},
+		Config:      coreconfig.Default(),
+	})
+
+	err := svc.Login(context.Background(), auth.LoginInput{
+		Email:    "user@example.com",
+		Password: "master-password",
+		PIN:      "1234",
+	})
+	require.ErrorContains(t, err, "two-factor authentication required")
+	require.ErrorIs(t, err, coreerrors.ErrUnauthenticated)
+	require.Empty(t, fr.completeCode)
+}
+
 func TestLoginFailsWhenRememberedTwoFactorTokenLoadErrors(t *testing.T) {
 	fr := &fakeRemote{}
 	cs := &fakeCredentialStore{loadTokenErr: errors.New("keyring unavailable")}
@@ -3503,6 +3513,86 @@ func TestUnlockWithPINRestoresSessionAndInstallsCacheKey(t *testing.T) {
 	require.Equal(t, 0, cs.savedUnlockEnvelope.FailedAttempts)
 	require.True(t, cs.savedUnlockEnvelope.BackoffUntil.IsZero())
 	cs.mu.Unlock()
+}
+
+func TestUnlockWithPINWithoutCacheKeyStaysResidentAndKeepsMutations(t *testing.T) {
+	email := "user@example.com"
+	pin := "1234"
+	ref := session.AccountRef{Email: email, ServerURL: "https://vault.bitwarden.com"}
+	bootID := "boot-abc"
+
+	validBundle := session.TokenBundle{
+		AccountID:    "acct-1",
+		Email:        ref.Email,
+		ServerURL:    ref.ServerURL,
+		AccessToken:  []byte("at"),
+		RefreshToken: []byte("rt"),
+		TokenType:    "Bearer",
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+
+	envelope := session.UnlockEnvelope{
+		Version:        session.UnlockEnvelopeVersion,
+		Account:        ref,
+		AccountID:      "acct-1",
+		BootID:         bootID,
+		ExpiresAt:      time.Now().Add(time.Hour),
+		FailedAttempts: 2,
+		PINMaxFailures: 5,
+		BackoffUntil:   time.Now().Add(-time.Hour), // past backoff
+	}
+
+	material := session.UnlockMaterial{
+		CacheKey: nil,
+		UserKey:  []byte("user-key"),
+	}
+
+	// Reset envelope after successful open.
+	resetEnvelope := envelope.Clone()
+	resetEnvelope.FailedAttempts = 0
+	resetEnvelope.BackoffUntil = time.Time{}
+
+	cs := &fakeCredentialStore{
+		tokenBundle: validBundle,
+		envelope:    envelope,
+	}
+	pe := &fakePINEnvelope{
+		openMaterial: material,
+		openUpdated:  resetEnvelope,
+		openErr:      nil,
+	}
+	boot := &fakeBootID{id: bootID}
+	fr := &fakeRemote{}
+
+	cfg := coreconfig.Default()
+	cfg.Bitwarden.Email = email
+
+	svc := NewService(Deps{
+		Config:      cfg,
+		Remote:      fr,
+		Credentials: cs,
+		BootID:      boot,
+		PINEnvelope: pe,
+	})
+
+	err := svc.UnlockWithPIN(context.Background(), email, pin)
+	require.NoError(t, err)
+
+	svc.mu.Lock()
+	require.Equal(t, auth.LockStateUnlocked, svc.state)
+	require.Empty(t, svc.cacheKey)
+	require.Equal(t, sessionResident, svc.sessionMode, "no cache key: cache-only could not persist anything")
+	svc.mu.Unlock()
+
+	// An offline mutation must not be dropped: it lands in the resident state.
+	fr.createErr = errRemoteDown
+	created, err := svc.Create(context.Background(), vault.Item{Name: "Offline"})
+	require.NoError(t, err)
+	require.Len(t, svc.pendingMutationsForTest(), 1)
+	items, err := svc.Items(context.Background())
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.Equal(t, created.ID, items[0].ID)
 }
 
 func TestUnlockWithPINRestoresPersistedConflictsFromCache(t *testing.T) {
@@ -4241,6 +4331,7 @@ func TestSearchDoesNotLeavePlaintextItemsResidentAfterOperation(t *testing.T) {
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
+	svc.sessionMode = sessionCacheOnly
 	svc.mu.Unlock()
 
 	// Search should find the item via cache.
@@ -4279,6 +4370,7 @@ func TestGetDoesNotLeavePlaintextItemsResidentAfterOperation(t *testing.T) {
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
+	svc.sessionMode = sessionCacheOnly
 	svc.mu.Unlock()
 
 	// Get existing item.
@@ -4315,6 +4407,7 @@ func TestItemsDoesNotLeavePlaintextItemsResidentAfterOperation(t *testing.T) {
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
+	svc.sessionMode = sessionCacheOnly
 	svc.mu.Unlock()
 
 	items, err := svc.Items(context.Background())
@@ -4594,127 +4687,6 @@ func TestLoginRejectsShortPIN(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "PIN is required")
 	})
-}
-
-// ---------------------------------------------------------------------------
-// UnlockAndCreateEnvelope tests (finding #1)
-// ---------------------------------------------------------------------------
-
-func TestUnlockAndCreateEnvelopeStoresBundleAndEnvelope(t *testing.T) {
-	email := "user@example.com"
-	password := "master-password"
-	pin := "1234"
-	ref := session.AccountRef{Email: email, ServerURL: "https://vault.bitwarden.com"}
-	bootID := "boot-abc"
-
-	fr := &fakeRemote{
-		exportMaterial: session.UnlockMaterial{UserKey: []byte("user-key-bytes")},
-		exportTokens: session.TokenBundle{
-			AccountID:    "acct-1",
-			AccessToken:  []byte("access-token"),
-			RefreshToken: []byte("refresh-token"),
-			TokenType:    "Bearer",
-			ExpiresAt:    time.Now().Add(time.Hour),
-		},
-	}
-
-	cs := &fakeCredentialStore{}
-	pe := &fakePINEnvelope{
-		result: session.UnlockEnvelope{Version: session.UnlockEnvelopeVersion, BootID: bootID},
-	}
-	boot := &fakeBootID{id: bootID}
-	fakCache := &fakeCache{loadErr: os.ErrNotExist}
-
-	svc := NewService(Deps{
-		Remote:      fr,
-		Cache:       fakCache,
-		SecretBox:   &fakeSecretBox{},
-		Credentials: cs,
-		BootID:      boot,
-		PINEnvelope: pe,
-		Config:      coreconfig.Default(),
-	})
-
-	err := svc.UnlockAndCreateEnvelope(context.Background(), email, password, pin, nil)
-	require.NoError(t, err)
-
-	// Verify remote login was called.
-	fr.mu.Lock()
-	require.True(t, fr.loginCalled)
-	fr.mu.Unlock()
-
-	// Verify ExportSession was called.
-	require.Equal(t, int32(1), fr.exportCallCnt.Load())
-
-	// Token bundle should be saved.
-	cs.mu.Lock()
-	require.Equal(t, 1, cs.saveTokenCalled)
-	require.Equal(t, 1, cs.savePINCalls)
-	require.Equal(t, 1, cs.saveEnvCalled)
-	cs.mu.Unlock()
-
-	// PIN profile should be saved and verify the PIN.
-	cs.mu.Lock()
-	savedProfile := cs.savedPINProfile
-	cs.mu.Unlock()
-	require.True(t, savedProfile.VerifyPIN(pin), "saved profile should verify correct PIN")
-
-	// PIN envelope should have been created with EnvelopeKey secret (not raw PIN).
-	pe.mu.Lock()
-	require.Equal(t, 1, pe.createCallCnt)
-	require.Equal(t, ref, pe.ref)
-	require.NotEqual(t, pin, pe.pin, "envelope Create should use EnvelopeKey secret, not raw PIN")
-	require.Len(t, pe.pin, 64, "EnvelopeKey secret should be 64 hex chars (32 bytes)")
-	require.Equal(t, bootID, pe.bootID)
-	pe.mu.Unlock()
-
-	// Service should remain unlocked (post-enrollment, no error).
-	svc.mu.Lock()
-	require.Equal(t, auth.LockStateUnlocked, svc.state)
-	svc.mu.Unlock()
-}
-
-func TestUnlockAndCreateEnvelopeFailSavesLeavesLocked(t *testing.T) {
-	email := "user@example.com"
-	password := "master-password"
-	pin := "1234"
-	bootID := "boot-abc"
-
-	fr := &fakeRemote{
-		exportMaterial: session.UnlockMaterial{UserKey: []byte("user-key-bytes")},
-		exportTokens: session.TokenBundle{
-			AccountID:    "acct-1",
-			AccessToken:  []byte("access-token"),
-			RefreshToken: []byte("refresh-token"),
-			TokenType:    "Bearer",
-			ExpiresAt:    time.Now().Add(time.Hour),
-		},
-	}
-
-	cs := &fakeCredentialStore{saveTokenErr: fmt.Errorf("keyring write error")}
-	pe := &fakePINEnvelope{
-		result: session.UnlockEnvelope{Version: session.UnlockEnvelopeVersion, BootID: bootID},
-	}
-	boot := &fakeBootID{id: bootID}
-	fakCache := &fakeCache{loadErr: os.ErrNotExist}
-
-	svc := NewService(Deps{
-		Remote:      fr,
-		Cache:       fakCache,
-		SecretBox:   &fakeSecretBox{},
-		Credentials: cs,
-		BootID:      boot,
-		PINEnvelope: pe,
-		Config:      coreconfig.Default(),
-	})
-
-	err := svc.UnlockAndCreateEnvelope(context.Background(), email, password, pin, nil)
-	require.Error(t, err)
-
-	// Service should be locked after cleanup.
-	svc.mu.Lock()
-	require.Equal(t, auth.LockStateLocked, svc.state)
-	svc.mu.Unlock()
 }
 
 // ---------------------------------------------------------------------------
@@ -5127,7 +5099,7 @@ func TestSoftLockClearsResidentState(t *testing.T) {
 	})
 
 	// Unlock
-	err := svc.Unlock(context.Background(), "user@test.com", "pw")
+	err := svc.unlock(context.Background(), "user@test.com", "pw", nil)
 	require.NoError(t, err)
 
 	// Verify unlocked state
@@ -5255,7 +5227,7 @@ func TestLockCompatibilityWrapper(t *testing.T) {
 		SecretBox: &fakeSecretBox{},
 	})
 
-	err := svc.Unlock(context.Background(), "user@test.com", "pw")
+	err := svc.unlock(context.Background(), "user@test.com", "pw", nil)
 	require.NoError(t, err)
 
 	_, err = svc.Search(context.Background(), "git", 10)

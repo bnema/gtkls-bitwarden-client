@@ -148,49 +148,32 @@ func (s *State) Back() {
 	}
 }
 
-// ModeForAuthStatus returns the appropriate initial mode given the auth status
-// and whether an email is configured. It is a pure function suitable for testing.
-func ModeForAuthStatus(status session.AuthStatus, hasEmail bool) Mode {
-	switch status {
-	case session.KeyringUnavailable:
-		return ModeKeyringError
-	case session.LoggedInUnlockAvailable:
-		if hasEmail {
-			return ModePINUnlock
-		}
-		return ModeUnlock
-	case session.LoggedInLocked:
-		return ModeUnlock
-	default:
-		// Unauthenticated or any other status.
-		return ModeUnlock
-	}
-}
-
 // ModeForAuthStatusDetail returns the appropriate initial mode given the
 // full auth status detail and whether an email is configured. It considers
 // PIN profile and envelope presence to distinguish between renewal (profile
 // exists, only master password needed) and fresh setup (no profile, master
 // password + new PIN required).
 func ModeForAuthStatusDetail(detail session.AuthStatusDetail, hasEmail bool) Mode {
-	switch detail.Status {
-	case session.KeyringUnavailable:
+	switch detail.NextStep() {
+	case session.UnlockStepFixKeyring:
 		return ModeKeyringError
-	case session.LoggedInUnlockAvailable:
+	case session.UnlockStepPIN:
 		if hasEmail {
 			return ModePINUnlock
 		}
 		return ModeUnlock
-	case session.LoggedInLocked:
-		if detail.HasPINProfile && detail.HasEnvelope && detail.Reason == session.AuthReasonEnvelopeExpired {
-			return ModePINUnlock
-		}
+	case session.UnlockStepRenewEnvelope:
+		return ModePINRenew
+	case session.UnlockStepSetupPIN:
+		return ModePINSetup
+	case session.UnlockStepWait:
+		// During PIN backoff the overlay offers the master-password recovery
+		// form matching the stored PIN profile state.
 		if detail.HasPINProfile {
 			return ModePINRenew
 		}
 		return ModePINSetup
 	default:
-		// Unauthenticated or any other status.
 		return ModeUnlock
 	}
 }

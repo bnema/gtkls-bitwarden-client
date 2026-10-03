@@ -141,7 +141,6 @@ const (
 	AuthReasonNoToken             AuthStatusReason = "no_token"
 	AuthReasonNoPINProfile        AuthStatusReason = "no_pin_profile"
 	AuthReasonNoEnvelope          AuthStatusReason = "no_envelope"
-	AuthReasonEnvelopeExpired     AuthStatusReason = "envelope_expired"
 	AuthReasonBootChanged         AuthStatusReason = "boot_changed"
 	AuthReasonPINBackoff          AuthStatusReason = "pin_backoff"
 	AuthReasonAccountMismatch     AuthStatusReason = "account_mismatch"
@@ -158,4 +157,51 @@ type AuthStatusDetail struct {
 	HasEnvelope         bool             `json:"hasEnvelope"`
 	EnvelopeValid       bool             `json:"envelopeValid"`
 	SoftUnlockAvailable bool             `json:"softUnlockAvailable"`
+}
+
+// UnlockStep names the next action an account must take to reach an unlocked
+// vault. It is derived from AuthStatusDetail so every front end (CLI, GUI)
+// shares one decision about whether PIN unlock is possible and what the user
+// has to do otherwise.
+type UnlockStep string
+
+const (
+	// UnlockStepFixKeyring means the OS secret service is unavailable.
+	UnlockStepFixKeyring UnlockStep = "fix_keyring"
+	// UnlockStepPIN means the local unlock envelope is usable: PIN alone unlocks.
+	UnlockStepPIN UnlockStep = "pin"
+	// UnlockStepRenewEnvelope means a PIN profile exists but the envelope is
+	// missing or unusable: the master password renews it.
+	UnlockStepRenewEnvelope UnlockStep = "renew_envelope"
+	// UnlockStepSetupPIN means the account is logged in without a PIN profile:
+	// the master password plus a new PIN are required.
+	UnlockStepSetupPIN UnlockStep = "setup_pin"
+	// UnlockStepWait means PIN attempts are in backoff: retry later.
+	UnlockStepWait UnlockStep = "wait"
+	// UnlockStepLogin means no usable login exists for the account.
+	UnlockStepLogin UnlockStep = "login"
+)
+
+// CanPINUnlock reports whether the account can be unlocked with the PIN alone.
+func (d AuthStatusDetail) CanPINUnlock() bool {
+	return d.Status == LoggedInUnlockAvailable && d.SoftUnlockAvailable
+}
+
+// NextStep returns the action required to unlock the account.
+func (d AuthStatusDetail) NextStep() UnlockStep {
+	switch {
+	case d.Status == KeyringUnavailable:
+		return UnlockStepFixKeyring
+	case d.CanPINUnlock():
+		return UnlockStepPIN
+	case d.Reason == AuthReasonPINBackoff:
+		return UnlockStepWait
+	case d.Status == LoggedInUnlockAvailable || d.Status == LoggedInLocked:
+		if d.HasPINProfile {
+			return UnlockStepRenewEnvelope
+		}
+		return UnlockStepSetupPIN
+	default:
+		return UnlockStepLogin
+	}
 }

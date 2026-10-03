@@ -5,28 +5,19 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/bnema/zerowrap"
 	"github.com/spf13/cobra"
 
-	cryptobox "github.com/bnema/gtkls-bitwarden-client/internal/adapters/cache/crypto"
-	cachefile "github.com/bnema/gtkls-bitwarden-client/internal/adapters/cache/file"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/clipboard"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/compose"
 	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/gui/gtk"
 	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/gui/layershell"
 	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/paths/xdg"
-	remoteadapter "github.com/bnema/gtkls-bitwarden-client/internal/adapters/remote/bitwarden"
-	keyring "github.com/bnema/gtkls-bitwarden-client/internal/adapters/secrets/keyring"
-	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/session/bootid"
-	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/session/pinenvelope"
-	"github.com/bnema/gtkls-bitwarden-client/internal/app"
-	viperadapter "github.com/bnema/gtkls-bitwarden-client/internal/app/viper"
 	coreconfig "github.com/bnema/gtkls-bitwarden-client/internal/core/config"
 	safelog "github.com/bnema/gtkls-bitwarden-client/internal/core/logging"
-	"github.com/bnema/gtkls-bitwarden-client/internal/core/session"
 	"github.com/bnema/gtkls-bitwarden-client/internal/ports/in"
-	"github.com/bnema/gtkls-bitwarden-client/internal/ports/out"
 )
 
 // Options holds configuration for the CLI.
@@ -39,15 +30,11 @@ type Options struct {
 	// ComposeService builds the application service. If nil, production adapters
 	// are used. Injecting a test double keeps auth command tests offline.
 	ComposeService func(context.Context, *coreconfig.Config, string, string) (in.AppService, error)
-	// CredentialStore backs lock/logout keyring operations. If nil, keyring.New()
-	// is used. Injecting a test double prevents tests from touching the real
-	// OS secret service.
-	CredentialStore out.CredentialStore
 	// ClipboardHelperProvider owns clipboard bytes for the hidden internal helper.
-	// If nil, the Wayland foreground provider is used. Tests inject this to avoid
+	// If nil, the clipboard module's Wayland foreground provider is used. Tests inject this to avoid
 	// touching the real desktop clipboard. Secrets must be provided as bytes,
 	// never argv/env strings.
-	ClipboardHelperProvider func(context.Context, []byte, time.Duration) error
+	ClipboardHelperProvider clipboard.HelperProvider
 }
 
 // NewRootCommand creates the root CLI command with all subcommands.
@@ -63,7 +50,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 			cmd.Println(fmt.Sprintf("gtkls-bitwarden-client %s", opts.Version))
 
 			// Load config; tolerate missing email for first-run scenarios.
-			mgr := viperadapter.NewManager(opts.ConfigPath)
+			mgr := newConfigManager(opts)
 			cfg, err := mgr.Load(cmd.Context())
 			if err != nil {
 				return fmt.Errorf("config load: %w", err)
@@ -133,7 +120,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 	root.AddCommand(newLoginCmd(opts, cachePath, outboxPath))
 	root.AddCommand(newUnlockCmd(opts, cachePath, outboxPath))
 	root.AddCommand(newStatusCmd(opts, cachePath, outboxPath))
-	root.AddCommand(newLockCmd(opts))
+	root.AddCommand(newLockCmd(opts, cachePath, outboxPath))
 	root.AddCommand(newCacheCmd(cachePath, outboxPath))
 	root.AddCommand(newLogoutCmd(opts, cachePath, outboxPath))
 	root.AddCommand(newSyncCmd())
@@ -146,114 +133,19 @@ func NewRootCommand(opts Options) *cobra.Command {
 // Composition
 // ---------------------------------------------------------------------------
 
-// composeService builds all application dependencies and returns the service.
+// composeAppService returns the injected service when Options.ComposeService is
+// set, otherwise the production service built by the compose package.
 // cachePath and outboxPath should be computed once by the caller.
 func composeAppService(opts Options, ctx context.Context, cfg *coreconfig.Config, cachePath, outboxPath string) (in.AppService, error) {
 	if opts.ComposeService != nil {
 		return opts.ComposeService(ctx, cfg, cachePath, outboxPath)
 	}
-	return composeService(ctx, cfg, cachePath, outboxPath)
+	return compose.Service(ctx, cfg, cachePath, outboxPath)
 }
 
-func composeService(ctx context.Context, cfg *coreconfig.Config, cachePath, outboxPath string) (in.AppService, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	// Secret box for cache/outbox encryption.
-	box := cryptobox.NewBox()
-
-	// File-backed cache and outbox stores.
-	cacheStore := cachefile.NewStore(cachePath)
-	outboxStore := cachefile.NewOutboxStore(outboxPath, box)
-
-	// Bitwarden remote adapter.
-	remote, err := remoteadapter.NewClient(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("remote client: %w", err)
-	}
-
-	// Session infrastructure: OS keyring, boot ID, PIN envelope.
-	credentials := keyring.New()
-	bootID := bootid.New()
-	pinEnvelope := pinenvelope.New(pinenvelope.ServiceConfig{})
-
-	// Application service.
-	svc := app.NewService(app.Deps{
-		Remote:      remote,
-		Cache:       cacheStore,
-		Outbox:      outboxStore,
-		SecretBox:   box,
-		Config:      cfg,
-		Credentials: credentials,
-		BootID:      bootID,
-		PINEnvelope: pinEnvelope,
-		// Clock can be nil; service falls back to time.Now.
-	})
-
-	return svc, nil
-}
-
-// ---------------------------------------------------------------------------
-// Credential helpers for lock/logout
-// ---------------------------------------------------------------------------
-
-var (
-	defaultCredentialStoreOnce sync.Once
-	defaultCredentialStore     out.CredentialStore
-)
-
-// credentialStore returns the CredentialStore to use for lock/logout operations.
-func credentialStore(opts Options) out.CredentialStore {
-	if opts.CredentialStore != nil {
-		return opts.CredentialStore
-	}
-	defaultCredentialStoreOnce.Do(func() {
-		defaultCredentialStore = keyring.New()
-	})
-	return defaultCredentialStore
-}
-
-// accountRefFromConfig builds an AccountRef from the config's email and
-// effective server URL.
-func accountRefFromConfig(cfg *coreconfig.Config) session.AccountRef {
-	return session.AccountRef{
-		Email:     cfg.Bitwarden.Email,
-		ServerURL: effectiveServerURL(cfg),
-	}
-}
-
-// deleteUnlockEnvelopeForConfig checks keyring availability and deletes the
-// unlock envelope for the configured account. Token bundle and cache are
-// left untouched.
-func deleteUnlockEnvelopeForConfig(ctx context.Context, store out.CredentialStore, cfg *coreconfig.Config) error {
-	if err := store.CheckAvailable(ctx); err != nil {
-		return fmt.Errorf("check credential store: %w", err)
-	}
-	ref := accountRefFromConfig(cfg)
-	if err := store.DeleteUnlockEnvelope(ctx, ref); err != nil {
-		return fmt.Errorf("delete unlock envelope: %w", err)
-	}
-	return nil
-}
-
-// deleteCredentialsForConfig checks keyring availability and deletes the
-// unlock envelope, token bundle, and PIN profile for the configured account.
-func deleteCredentialsForConfig(ctx context.Context, store out.CredentialStore, cfg *coreconfig.Config) error {
-	if err := store.CheckAvailable(ctx); err != nil {
-		return fmt.Errorf("check credential store: %w", err)
-	}
-	ref := accountRefFromConfig(cfg)
-	if err := store.DeleteUnlockEnvelope(ctx, ref); err != nil {
-		return fmt.Errorf("delete unlock envelope: %w", err)
-	}
-	if err := store.DeleteTokenBundle(ctx, ref); err != nil {
-		return fmt.Errorf("delete token bundle: %w", err)
-	}
-	if err := store.DeletePINProfile(ctx, ref); err != nil {
-		return fmt.Errorf("delete pin profile: %w", err)
-	}
-	return nil
+// newConfigManager returns the configuration manager for the CLI config path.
+func newConfigManager(opts Options) compose.ConfigManager {
+	return compose.NewConfigManager(opts.ConfigPath)
 }
 
 // ---------------------------------------------------------------------------
@@ -272,7 +164,7 @@ func newConfigCmd(opts Options) *cobra.Command {
 		Short: "Print the config file path",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			mgr := viperadapter.NewManager(opts.ConfigPath)
+			mgr := newConfigManager(opts)
 			cmd.Println(mgr.Path())
 			return nil
 		},
@@ -283,7 +175,7 @@ func newConfigCmd(opts Options) *cobra.Command {
 		Short: "Validate the configuration",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			mgr := viperadapter.NewManager(opts.ConfigPath)
+			mgr := newConfigManager(opts)
 			cfg, err := mgr.Load(cmd.Context())
 			if err != nil {
 				return err
@@ -301,7 +193,7 @@ func newConfigCmd(opts Options) *cobra.Command {
 		Short: "Get a config value",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			mgr := viperadapter.NewManager(opts.ConfigPath)
+			mgr := newConfigManager(opts)
 			cfg, err := mgr.Load(cmd.Context())
 			if err != nil {
 				return err
@@ -320,7 +212,7 @@ func newConfigCmd(opts Options) *cobra.Command {
 		Short: "Set a config value",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			mgr := viperadapter.NewManager(opts.ConfigPath)
+			mgr := newConfigManager(opts)
 			cfg, err := mgr.Load(cmd.Context())
 			if err != nil {
 				return err
@@ -339,22 +231,6 @@ func newConfigCmd(opts Options) *cobra.Command {
 // Cache subcommand
 // ---------------------------------------------------------------------------
 
-// clearCacheAndOutbox clears both the cache and outbox stores, returning an
-// error if either operation fails.
-func clearCacheAndOutbox(ctx context.Context, cachePath, outboxPath string) error {
-	box := cryptobox.NewBox()
-	cacheStore := cachefile.NewStore(cachePath)
-	outboxStore := cachefile.NewOutboxStore(outboxPath, box)
-
-	if err := cacheStore.Clear(ctx); err != nil {
-		return fmt.Errorf("cache clear: %w", err)
-	}
-	if err := outboxStore.Clear(ctx); err != nil {
-		return fmt.Errorf("outbox clear: %w", err)
-	}
-	return nil
-}
-
 // newCacheCmd creates the "cache" command with a "clear" subcommand.
 func newCacheCmd(cachePath, outboxPath string) *cobra.Command {
 	cmd := &cobra.Command{
@@ -367,7 +243,7 @@ func newCacheCmd(cachePath, outboxPath string) *cobra.Command {
 		Short: "Clear the cache",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := clearCacheAndOutbox(cmd.Context(), cachePath, outboxPath); err != nil {
+			if err := compose.ClearLocalData(cmd.Context(), cachePath, outboxPath); err != nil {
 				return err
 			}
 			cmd.Println("cache cleared")
@@ -390,7 +266,7 @@ func newLogoutCmd(opts Options, cachePath, outboxPath string) *cobra.Command {
 		Short: "Log out of Bitwarden",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			mgr := viperadapter.NewManager(opts.ConfigPath)
+			mgr := newConfigManager(opts)
 			cfg, err := mgr.Load(cmd.Context())
 			if err != nil {
 				return fmt.Errorf("config load: %w", err)
@@ -398,13 +274,12 @@ func newLogoutCmd(opts Options, cachePath, outboxPath string) *cobra.Command {
 
 			// Only delete credentials when an email is configured.
 			if cfg.Bitwarden.Email != "" {
-				store := credentialStore(opts)
-				if err := deleteCredentialsForConfig(cmd.Context(), store, cfg); err != nil {
+				if err := forgetAccount(cmd.Context(), opts, cfg, cachePath, outboxPath); err != nil {
 					return fmt.Errorf("logout: %w", err)
 				}
 			}
 
-			if err := clearCacheAndOutbox(cmd.Context(), cachePath, outboxPath); err != nil {
+			if err := compose.ClearLocalData(cmd.Context(), cachePath, outboxPath); err != nil {
 				return err
 			}
 

@@ -20,7 +20,8 @@ func TestSetBackgroundSyncSuspendedUnlocked(t *testing.T) {
 
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
-	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.sessionMode = sessionCacheOnly
+	svc.backgroundSyncActive = true
 	svc.mu.Unlock()
 
 	require.NoError(t, svc.SetBackgroundSyncSuspended(context.Background(), true))
@@ -90,7 +91,8 @@ func TestUnlockWithPINConfiguresCacheOnlyWorkerStateWhenEnabled(t *testing.T) {
 	require.NoError(t, svc.UnlockWithPIN(context.Background(), email, pin))
 
 	svc.mu.Lock()
-	require.Equal(t, backgroundSyncCacheOnly, svc.backgroundSyncMode)
+	require.Equal(t, sessionCacheOnly, svc.sessionMode)
+	require.True(t, svc.backgroundSyncActive)
 	require.NotNil(t, svc.cancelWorkers)
 	svc.mu.Unlock()
 
@@ -98,8 +100,8 @@ func TestUnlockWithPINConfiguresCacheOnlyWorkerStateWhenEnabled(t *testing.T) {
 }
 
 func TestStartBackgroundSyncWorkerDoesNotMutateStateOnLockedService(t *testing.T) {
-	// Regression: startBackgroundSyncWorker must not write backgroundSyncMode
-	// or backgroundSyncSuspended on a locked service. If SoftLock/Shutdown
+	// Regression: startBackgroundSyncWorker must not write sessionMode,
+	// backgroundSyncActive or backgroundSyncSuspended on a locked service. If SoftLock/Shutdown
 	// runs between the unlock path dropping s.mu and calling
 	// startBackgroundSyncWorker, the worker startup would otherwise
 	// overwrite the mode on an already-locked service and launch a
@@ -107,10 +109,11 @@ func TestStartBackgroundSyncWorkerDoesNotMutateStateOnLockedService(t *testing.T
 	cfg := coreconfig.Default()
 	svc := NewService(Deps{Config: cfg})
 
-	// Service starts locked with backgroundSyncDisabled (zero value).
+	// Service starts locked with zero-value session state.
 	svc.mu.Lock()
 	require.Equal(t, auth.LockStateLocked, svc.state)
-	require.Equal(t, backgroundSyncDisabled, svc.backgroundSyncMode)
+	require.Equal(t, sessionResident, svc.sessionMode)
+	require.False(t, svc.backgroundSyncActive)
 	require.False(t, svc.backgroundSyncSuspended)
 	svc.mu.Unlock()
 
@@ -119,12 +122,14 @@ func TestStartBackgroundSyncWorkerDoesNotMutateStateOnLockedService(t *testing.T
 	canceledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	svc.startBackgroundSyncWorker(canceledCtx, backgroundSyncCacheOnly)
+	svc.startBackgroundSyncWorker(canceledCtx, sessionCacheOnly)
 
 	// State must not have been overwritten.
 	svc.mu.Lock()
-	require.Equal(t, backgroundSyncDisabled, svc.backgroundSyncMode,
-		"backgroundSyncMode must stay disabled on a locked service")
+	require.Equal(t, sessionResident, svc.sessionMode,
+		"sessionMode must stay at its zero value on a locked service")
+	require.False(t, svc.backgroundSyncActive,
+		"backgroundSyncActive must stay false on a locked service")
 	require.False(t, svc.backgroundSyncSuspended,
 		"backgroundSyncSuspended must stay false on a locked service")
 	svc.mu.Unlock()
@@ -176,7 +181,8 @@ func TestUnlockWithPINLeavesWorkerDisabledWhenBackgroundSyncDisabled(t *testing.
 	require.NoError(t, svc.UnlockWithPIN(context.Background(), email, pin))
 
 	svc.mu.Lock()
-	require.Equal(t, backgroundSyncDisabled, svc.backgroundSyncMode)
+	require.Equal(t, sessionCacheOnly, svc.sessionMode)
+	require.False(t, svc.backgroundSyncActive)
 	require.Nil(t, svc.cancelWorkers)
 	svc.mu.Unlock()
 }
@@ -186,10 +192,11 @@ func TestUnlockLeavesResidentWorkerDisabledWhenBackgroundSyncDisabled(t *testing
 	cfg.Security.BackgroundSync.Enabled = false
 
 	svc := NewService(Deps{Config: cfg, Remote: &fakeRemote{}})
-	require.NoError(t, svc.Unlock(context.Background(), "user@example.com", "master-password"))
+	require.NoError(t, svc.unlock(context.Background(), "user@example.com", "master-password", nil))
 
 	svc.mu.Lock()
-	require.Equal(t, backgroundSyncDisabled, svc.backgroundSyncMode)
+	require.Equal(t, sessionResident, svc.sessionMode)
+	require.False(t, svc.backgroundSyncActive)
 	require.Nil(t, svc.cancelWorkers)
 	svc.mu.Unlock()
 }
@@ -210,13 +217,17 @@ func TestSyncOnceCacheOnlyRefreshesEncryptedCacheWithoutResidentState(t *testing
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
-	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.sessionMode = sessionCacheOnly
+	svc.backgroundSyncActive = true
 	svc.mu.Unlock()
 
-	svc.syncOnceCacheOnly(context.Background())
+	require.NoError(t, svc.syncOnceCacheOnly(context.Background()))
 
-	items, folders, outbox, err := svc.loadCachedVaultWithKey(context.Background(), cacheKey)
+	cached, err := svc.vaultCache().Open(context.Background(), cacheKey)
 	require.NoError(t, err)
+	items := cached.Items
+	folders := cached.Folders
+	outbox := cached.Outbox
 	require.Len(t, items, 1)
 	require.Equal(t, refreshedItem.Name, items[0].Name)
 	require.Empty(t, folders)
@@ -249,11 +260,12 @@ func TestSyncOnceByModeSkipsSuspendedCacheOnlyWorker(t *testing.T) {
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
-	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.sessionMode = sessionCacheOnly
+	svc.backgroundSyncActive = true
 	svc.backgroundSyncSuspended = true
 	svc.mu.Unlock()
 
-	svc.syncOnceByMode(context.Background(), backgroundSyncCacheOnly)
+	svc.syncOnceByMode(context.Background(), sessionCacheOnly)
 
 	require.Equal(t, int32(0), remote.syncCalled.Load())
 }
@@ -292,13 +304,17 @@ func TestSyncOnceCacheOnlyMarksConflictsInEncryptedCache(t *testing.T) {
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
-	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.sessionMode = sessionCacheOnly
+	svc.backgroundSyncActive = true
 	svc.mu.Unlock()
 
-	svc.syncOnceCacheOnly(context.Background())
+	require.NoError(t, svc.syncOnceCacheOnly(context.Background()))
 
-	items, folders, outbox, err := svc.loadCachedVaultWithKey(context.Background(), cacheKey)
+	cached, err := svc.vaultCache().Open(context.Background(), cacheKey)
 	require.NoError(t, err)
+	items := cached.Items
+	folders := cached.Folders
+	outbox := cached.Outbox
 	require.Len(t, items, 1)
 	require.Empty(t, folders)
 	require.Len(t, outbox, 1)
@@ -307,8 +323,7 @@ func TestSyncOnceCacheOnlyMarksConflictsInEncryptedCache(t *testing.T) {
 	require.Equal(t, pendingUpdate.ID, outbox[0].ID)
 	require.Equal(t, pendingUpdate.ItemID, outbox[0].ItemID)
 
-	persistedConflicts, err := svc.loadCachedConflictsWithKey(context.Background(), cacheKey)
-	require.NoError(t, err)
+	persistedConflicts := cached.Conflicts
 	require.Len(t, persistedConflicts, 1)
 	require.Equal(t, localItem.ID, persistedConflicts[0].ItemID)
 	require.Equal(t, items[0].ConflictID, persistedConflicts[0].ID)
@@ -354,13 +369,15 @@ func TestSyncOnceCacheOnlyReplaysOutboxBeforeClearingEncryptedCache(t *testing.T
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
 	svc.cacheKey = append(svc.cacheKey[:0], cacheKey...)
-	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.sessionMode = sessionCacheOnly
+	svc.backgroundSyncActive = true
 	svc.mu.Unlock()
 
-	svc.syncOnceCacheOnly(context.Background())
+	require.NoError(t, svc.syncOnceCacheOnly(context.Background()))
 
-	_, _, outbox, err := svc.loadCachedVaultWithKey(context.Background(), cacheKey)
+	cached, err := svc.vaultCache().Open(context.Background(), cacheKey)
 	require.NoError(t, err)
+	outbox := cached.Outbox
 	require.Empty(t, outbox, "encrypted cache outbox should be cleared only after replay succeeds")
 
 	select {
@@ -375,7 +392,8 @@ func TestSoftLockResetsBackgroundSyncState(t *testing.T) {
 
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
-	svc.backgroundSyncMode = backgroundSyncCacheOnly
+	svc.sessionMode = sessionCacheOnly
+	svc.backgroundSyncActive = true
 	svc.backgroundSyncSuspended = true
 	svc.cancelWorkers = func() {}
 	svc.mu.Unlock()
@@ -383,7 +401,8 @@ func TestSoftLockResetsBackgroundSyncState(t *testing.T) {
 	require.NoError(t, svc.SoftLock(context.Background()))
 
 	svc.mu.Lock()
-	require.Equal(t, backgroundSyncDisabled, svc.backgroundSyncMode)
+	require.Equal(t, sessionResident, svc.sessionMode)
+	require.False(t, svc.backgroundSyncActive)
 	require.False(t, svc.backgroundSyncSuspended)
 	require.Nil(t, svc.cancelWorkers)
 	svc.mu.Unlock()
@@ -399,10 +418,11 @@ func TestSyncOnceResidentStillInstallsResidentState(t *testing.T) {
 
 	svc.mu.Lock()
 	svc.state = auth.LockStateUnlocked
-	svc.backgroundSyncMode = backgroundSyncResident
+	svc.sessionMode = sessionResident
+	svc.backgroundSyncActive = true
 	svc.mu.Unlock()
 
-	svc.syncOnceResident(context.Background())
+	require.NoError(t, svc.SyncNow(context.Background()))
 
 	svc.mu.Lock()
 	require.Len(t, svc.items, 1)
