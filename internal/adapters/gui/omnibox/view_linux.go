@@ -91,10 +91,7 @@ const (
 	pinUnlockEntryWidth   = 320
 	formHorizontalMargin  = 14
 
-	genericAuthError      = "Login failed"
-	genericOperationError = "Something went wrong"
-	genericSearchError    = "Search failed"
-	genericSaveError      = "Save failed"
+	genericAuthError = "Login failed"
 )
 
 // dynamicHandler tracks a GTK signal connection that must be explicitly
