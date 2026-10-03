@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/clipboard/helpercmd"
 	"github.com/stretchr/testify/require"
 )
 
@@ -39,7 +38,7 @@ func TestHelperClipboardSetPassesSecretOnStdinOnly(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, "/bin/gtkls-bitwarden-client", runner.cmd.name)
-	require.Equal(t, []string{helpercmd.CommandName, "--ttl", "45s"}, runner.cmd.args)
+	require.Equal(t, []string{HelperCommandName, "--ttl", "45s"}, runner.cmd.args)
 	require.Equal(t, []byte("secret-password"), runner.stdin)
 	for _, arg := range runner.cmd.args {
 		require.NotContains(t, arg, "secret-password")

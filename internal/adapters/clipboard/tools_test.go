@@ -6,11 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
 
-func TestSystemWriterSelectCommand(t *testing.T) {
+func TestSystemToolsSelectCommand(t *testing.T) {
 	tests := []struct {
 		name     string
 		env      map[string]string
@@ -53,7 +54,7 @@ func TestSystemWriterSelectCommand(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			writer := SystemWriter{
+			writer := systemTools{
 				lookPath: func(name string) (string, error) {
 					if path, ok := tt.tools[name]; ok {
 						return path, nil
@@ -74,7 +75,7 @@ func TestSystemWriterSelectCommand(t *testing.T) {
 	}
 }
 
-func TestSystemWriterWriteClipboardRunsCommandWithInput(t *testing.T) {
+func TestSystemToolsWriteClipboardRunsCommandWithInput(t *testing.T) {
 	binDir := t.TempDir()
 	outPath := filepath.Join(t.TempDir(), "clipboard.txt")
 	toolPath := filepath.Join(binDir, "wl-copy")
@@ -82,7 +83,7 @@ func TestSystemWriterWriteClipboardRunsCommandWithInput(t *testing.T) {
 	require.NoError(t, os.WriteFile(toolPath, []byte(script), 0o700))
 	t.Setenv("CLIPBOARD_TEST_OUT", outPath)
 
-	writer := SystemWriter{
+	writer := systemTools{
 		lookPath: func(name string) (string, error) {
 			if name == "wl-copy" {
 				return toolPath, nil
@@ -97,8 +98,65 @@ func TestSystemWriterWriteClipboardRunsCommandWithInput(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, writer.WriteClipboard(context.Background(), "secret"))
+	require.NoError(t, writer.write(context.Background(), []byte("secret")))
 	got, err := os.ReadFile(outPath)
 	require.NoError(t, err)
 	require.Equal(t, "secret", string(got))
+}
+
+func TestSystemToolsForegroundServePassesSecretOnStdin(t *testing.T) {
+	binDir := t.TempDir()
+	outPath := filepath.Join(t.TempDir(), "clipboard.txt")
+	toolPath := filepath.Join(binDir, "wl-copy")
+	script := "#!/bin/sh\ncat > \"$CLIPBOARD_TEST_OUT\"\n"
+	require.NoError(t, os.WriteFile(toolPath, []byte(script), 0o700))
+	t.Setenv("CLIPBOARD_TEST_OUT", outPath)
+
+	provider := systemTools{
+		lookPath: func(name string) (string, error) {
+			if name == "wl-copy" {
+				return toolPath, nil
+			}
+			return "", errors.New("not found")
+		},
+	}
+
+	require.NoError(t, provider.serveForeground(context.Background(), []byte("secret"), 0))
+	got, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	require.Equal(t, "secret", string(got))
+}
+
+func TestSystemToolsForegroundServeTreatsTTLExpiryAsSuccess(t *testing.T) {
+	binDir := t.TempDir()
+	outPath := filepath.Join(t.TempDir(), "clipboard.txt")
+	toolPath := filepath.Join(binDir, "wl-copy")
+	script := "#!/bin/sh\ncat > \"$CLIPBOARD_TEST_OUT\"\nsleep 1\n"
+	require.NoError(t, os.WriteFile(toolPath, []byte(script), 0o700))
+	t.Setenv("CLIPBOARD_TEST_OUT", outPath)
+
+	provider := systemTools{
+		lookPath: func(name string) (string, error) {
+			if name == "wl-copy" {
+				return toolPath, nil
+			}
+			return "", errors.New("not found")
+		},
+	}
+
+	started := time.Now()
+	require.NoError(t, provider.serveForeground(context.Background(), []byte("secret"), 25*time.Millisecond))
+	require.Less(t, time.Since(started), 500*time.Millisecond)
+	got, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	require.Equal(t, "secret", string(got))
+}
+
+func TestSystemToolsForegroundServeRejectsNegativeTTL(t *testing.T) {
+	provider := systemTools{}
+
+	err := provider.serveForeground(context.Background(), []byte("secret"), -time.Second)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "ttl must be non-negative")
 }

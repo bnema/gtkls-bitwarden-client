@@ -13,6 +13,7 @@ import (
 
 	cryptobox "github.com/bnema/gtkls-bitwarden-client/internal/adapters/cache/crypto"
 	cachefile "github.com/bnema/gtkls-bitwarden-client/internal/adapters/cache/file"
+	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/clipboard"
 	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/gui/gtk"
 	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/gui/layershell"
 	"github.com/bnema/gtkls-bitwarden-client/internal/adapters/paths/xdg"
@@ -44,10 +45,10 @@ type Options struct {
 	// OS secret service.
 	CredentialStore out.CredentialStore
 	// ClipboardHelperProvider owns clipboard bytes for the hidden internal helper.
-	// If nil, the Wayland foreground provider is used. Tests inject this to avoid
+	// If nil, the clipboard module's Wayland foreground provider is used. Tests inject this to avoid
 	// touching the real desktop clipboard. Secrets must be provided as bytes,
 	// never argv/env strings.
-	ClipboardHelperProvider func(context.Context, []byte, time.Duration) error
+	ClipboardHelperProvider clipboard.HelperProvider
 }
 
 // NewRootCommand creates the root CLI command with all subcommands.
