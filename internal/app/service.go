@@ -678,35 +678,34 @@ func (s *Service) unlock(ctx context.Context, email, password string, prompt aut
 		}
 		defer clear(rememberedTwoFactorToken)
 
-		if prompt != nil {
-			challenge, err := s.deps.Remote.BeginLogin(ctx, email, password, rememberedTwoFactorToken)
-			if err != nil {
-				s.mu.Lock()
-				s.state = auth.LockStateLocked
-				s.mu.Unlock()
-				return fmt.Errorf("app: login failed: %w", err)
-			}
-			if challenge != nil {
-				defer challenge.Close()
-				provider, code, remember, err := prompt(ctx, challenge.Providers)
-				if err != nil {
-					s.mu.Lock()
-					s.state = auth.LockStateLocked
-					s.mu.Unlock()
-					return err
-				}
-				if err := s.deps.Remote.CompleteTwoFactorLogin(ctx, challenge, provider, code, remember); err != nil {
-					s.mu.Lock()
-					s.state = auth.LockStateLocked
-					s.mu.Unlock()
-					return fmt.Errorf("app: two-factor login failed: %w", err)
-				}
-			}
-		} else if err := s.deps.Remote.Login(ctx, email, password, rememberedTwoFactorToken); err != nil {
+		challenge, err := s.deps.Remote.BeginLogin(ctx, email, password, rememberedTwoFactorToken)
+		if err != nil {
 			s.mu.Lock()
 			s.state = auth.LockStateLocked
 			s.mu.Unlock()
 			return fmt.Errorf("app: login failed: %w", err)
+		}
+		if challenge != nil {
+			defer challenge.Close()
+			if prompt == nil {
+				s.mu.Lock()
+				s.state = auth.LockStateLocked
+				s.mu.Unlock()
+				return fmt.Errorf("app: login failed: two-factor authentication required: %w", cerrors.ErrUnauthenticated)
+			}
+			provider, code, remember, err := prompt(ctx, challenge.Providers)
+			if err != nil {
+				s.mu.Lock()
+				s.state = auth.LockStateLocked
+				s.mu.Unlock()
+				return err
+			}
+			if err := s.deps.Remote.CompleteTwoFactorLogin(ctx, challenge, provider, code, remember); err != nil {
+				s.mu.Lock()
+				s.state = auth.LockStateLocked
+				s.mu.Unlock()
+				return fmt.Errorf("app: two-factor login failed: %w", err)
+			}
 		}
 	}
 

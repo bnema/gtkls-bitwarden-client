@@ -509,3 +509,47 @@ func TestCacheOnlyBackToBackMutationsAreNotCoalesced(t *testing.T) {
 	require.True(t, items["item-1"].Deleted)
 	require.NotContains(t, items, "item-3")
 }
+
+// itemsOnlyRemote implements only out.RemoteItems: mutation specs must not
+// need any other remote capability.
+type itemsOnlyRemote struct{ calls []string }
+
+func (r *itemsOnlyRemote) Create(_ context.Context, item vault.Item) (vault.Item, error) {
+	r.calls = append(r.calls, "create")
+	return item, nil
+}
+
+func (r *itemsOnlyRemote) Update(_ context.Context, id string, item vault.Item) (vault.Item, error) {
+	r.calls = append(r.calls, "update:"+id)
+	return item, nil
+}
+
+func (r *itemsOnlyRemote) Trash(_ context.Context, id string) error {
+	r.calls = append(r.calls, "trash:"+id)
+	return nil
+}
+
+func (r *itemsOnlyRemote) Restore(_ context.Context, id string) (vault.Item, error) {
+	r.calls = append(r.calls, "restore:"+id)
+	return vault.Item{ID: id}, nil
+}
+
+func (r *itemsOnlyRemote) Delete(_ context.Context, id string) error {
+	r.calls = append(r.calls, "delete:"+id)
+	return nil
+}
+
+func TestMutationSpecsDependOnlyOnRemoteItems(t *testing.T) {
+	r := &itemsOnlyRemote{}
+	m := mutation{ID: "item-1", Item: vault.Item{ID: "item-1"}}
+	for _, kind := range []coresync.MutationKind{
+		coresync.MutationCreate, coresync.MutationUpdate, coresync.MutationTrash,
+		coresync.MutationRestore, coresync.MutationDelete,
+	} {
+		spec, ok := mutationSpecFor(kind)
+		require.True(t, ok, kind)
+		_, err := spec.call(context.Background(), r, m)
+		require.NoError(t, err, kind)
+	}
+	require.Equal(t, []string{"create", "update:item-1", "trash:item-1", "restore:item-1", "delete:item-1"}, r.calls)
+}

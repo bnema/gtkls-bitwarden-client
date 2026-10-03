@@ -21,8 +21,15 @@ import (
 	"github.com/bnema/zerowrap"
 )
 
-// Compile-time check that Client satisfies out.RemoteVault.
-var _ out.RemoteVault = (*Client)(nil)
+// Compile-time checks that Client satisfies every remote port.
+var (
+	_ out.RemoteAuth        = (*Client)(nil)
+	_ out.RemoteSession     = (*Client)(nil)
+	_ out.RemoteSync        = (*Client)(nil)
+	_ out.RemoteItems       = (*Client)(nil)
+	_ out.RemoteAttachments = (*Client)(nil)
+	_ out.RemoteVault       = (*Client)(nil)
+)
 
 // Package sentinel errors for operations the SDK does not support.
 var (
@@ -186,16 +193,6 @@ func classifySDKError(operation string, err error) error {
 		Message: message,
 		Cause:   err,
 	}
-}
-
-// Login authenticates with master password.
-func (c *Client) Login(ctx context.Context, email, password string, rememberedTwoFactorToken []byte) (retErr error) {
-	log, started := logRemoteStart(ctx, "login")
-	defer func() { logRemoteFinish(log, started, retErr) }()
-	if c == nil || c.sdk == nil {
-		return errors.New("bitwarden adapter: client or SDK is nil")
-	}
-	return c.sdk.Login(ctx, c.loginOptions(email, password, rememberedTwoFactorToken))
 }
 
 // BeginLogin starts login and returns a two-factor challenge when required.
