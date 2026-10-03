@@ -691,7 +691,7 @@ func (s *Service) unlock(ctx context.Context, email, password string, prompt aut
 				s.mu.Lock()
 				s.state = auth.LockStateLocked
 				s.mu.Unlock()
-				return errors.New("app: login failed: two-factor authentication required")
+				return fmt.Errorf("app: login failed: two-factor authentication required: %w", cerrors.ErrUnauthenticated)
 			}
 			provider, code, remember, err := prompt(ctx, challenge.Providers)
 			if err != nil {

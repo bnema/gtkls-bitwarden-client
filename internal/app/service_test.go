@@ -3381,6 +3381,7 @@ func TestLoginTwoFactorChallengeWithoutPromptFails(t *testing.T) {
 		PIN:      "1234",
 	})
 	require.ErrorContains(t, err, "two-factor authentication required")
+	require.ErrorIs(t, err, coreerrors.ErrUnauthenticated)
 	require.Empty(t, fr.completeCode)
 }
 
