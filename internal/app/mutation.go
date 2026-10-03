@@ -269,7 +269,9 @@ func (s *Service) applyMutation(ctx context.Context, spec *mutationSpec, m mutat
 	return s.queuePending(ctx, spec, m)
 }
 
-// commitSynced applies a remote-confirmed mutation locally.
+// commitSynced applies a remote-confirmed mutation locally. Resident sessions
+// update the resident items; cache-only sessions keep resident state empty and
+// only patch the encrypted cache.
 func (s *Service) commitSynced(ctx context.Context, spec *mutationSpec, m mutation, remoteItem vault.Item) (vault.Item, error) {
 	s.mu.Lock()
 	if err := s.ensureUnlocked(); err != nil {
@@ -278,12 +280,10 @@ func (s *Service) commitSynced(ctx context.Context, spec *mutationSpec, m mutati
 		return vault.Item{}, err
 	}
 	outcome := mutationOutcome{status: vault.SyncStatusSynced, remote: remoteItem}
-	var result vault.Item
-	s.items, result = spec.apply(s.items, m, outcome)
+	result := s.applyResidentLocked(spec, m, outcome)
 	s.rebuildIndexLocked()
-	s.saveCacheItemsAsyncLocked(ctx, func(items []vault.Item) []vault.Item {
-		items, _ = spec.apply(items, m, outcome)
-		return items
+	s.saveCacheMutationAsyncLocked(ctx, func(d *decryptedCacheSnapshot) {
+		d.Items, _ = spec.apply(d.Items, m, outcome)
 	})
 	s.mu.Unlock()
 	s.emit(SyncUpdated, spec.syncedMessage)
@@ -291,7 +291,8 @@ func (s *Service) commitSynced(ctx context.Context, spec *mutationSpec, m mutati
 }
 
 // queuePending records the mutation in the outbox and applies it locally as
-// pending.
+// pending. Resident sessions hold the outbox and items in memory; cache-only
+// sessions add both to the encrypted cache instead.
 func (s *Service) queuePending(ctx context.Context, spec *mutationSpec, m mutation) (vault.Item, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -309,13 +310,36 @@ func (s *Service) queuePending(ctx context.Context, spec *mutationSpec, m mutati
 	if err != nil {
 		return vault.Item{}, fmt.Errorf("app: marshal %s payload: %w", spec.kind, err)
 	}
-	s.appendOutboxLocked(ctx, spec.kind, m.itemID(), payload)
+	queued := s.newOutboxMutationLocked(spec.kind, m.itemID(), payload)
+	outcome := mutationOutcome{status: vault.SyncStatusPending}
 
-	var result vault.Item
-	s.items, result = spec.apply(s.items, m, mutationOutcome{status: vault.SyncStatusPending})
+	if s.sessionMode.cacheOnly() {
+		s.saveCacheMutationAsyncLocked(ctx, func(d *decryptedCacheSnapshot) {
+			d.Items, _ = spec.apply(d.Items, m, outcome)
+			d.Outbox = append(d.Outbox, queued)
+		})
+	} else {
+		s.appendOutboxLocked(ctx, queued)
+	}
+	result := s.applyResidentLocked(spec, m, outcome)
 	s.rebuildIndexLocked()
 	s.emit(MutationPending, spec.pendingMessage)
 	return result, nil
+}
+
+// applyResidentLocked applies m to the resident items of a resident session
+// and returns the resulting item. A cache-only session has no resident items:
+// they stay untouched and the result is computed against an empty list (so
+// kinds that only flag an existing item, such as a pending restore, return no
+// item). The caller MUST hold s.mu.
+func (s *Service) applyResidentLocked(spec *mutationSpec, m mutation, o mutationOutcome) vault.Item {
+	if s.sessionMode.cacheOnly() {
+		_, result := spec.apply(nil, m, o)
+		return result
+	}
+	var result vault.Item
+	s.items, result = spec.apply(s.items, m, o)
+	return result
 }
 
 // replayMutation replays one outbox mutation against the remote using the

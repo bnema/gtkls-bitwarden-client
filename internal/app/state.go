@@ -50,6 +50,12 @@ type Service struct {
 	backgroundSyncSuspended bool
 	deps                    Deps
 
+	// cachePatches are cache-only mutations not yet written to the encrypted
+	// cache, in order. Unlike full snapshots they are deltas, so a save may
+	// never be skipped as stale; whichever save runs next applies all of them.
+	// Guarded by mu.
+	cachePatches []func(*decryptedCacheSnapshot)
+
 	pendingRemoteItems   []vault.Item
 	pendingRemoteFolders []vault.Folder
 }

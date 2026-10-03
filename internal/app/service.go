@@ -1108,20 +1108,26 @@ func (s *Service) zeroCacheKeyLocked() {
 	}
 }
 
-// appendOutboxLocked appends a mutation to the outbox and returns it.
-// The caller must hold s.mu.
-func (s *Service) appendOutboxLocked(ctx context.Context, kind coresync.MutationKind, itemID string, payload []byte) coresync.OutboxMutation {
+// newOutboxMutationLocked builds an outbox mutation with a fresh ID. The
+// caller MUST hold s.mu and is responsible for queueing it.
+func (s *Service) newOutboxMutationLocked(kind coresync.MutationKind, itemID string, payload []byte) coresync.OutboxMutation {
 	s.outboxSeq++
-	m := coresync.OutboxMutation{
+	return coresync.OutboxMutation{
 		ID:        fmt.Sprintf("m-%d-%d", s.now().UnixNano(), s.outboxSeq),
 		Kind:      kind,
 		ItemID:    itemID,
 		CreatedAt: s.now(),
 		Payload:   payload,
 	}
+}
+
+// appendOutboxLocked appends a mutation to the resident outbox and persists
+// it. It is for resident sessions only; cache-only sessions queue through the
+// encrypted cache (see saveCacheMutationAsyncLocked). The caller must hold
+// s.mu.
+func (s *Service) appendOutboxLocked(ctx context.Context, m coresync.OutboxMutation) {
 	s.outbox = append(s.outbox, m)
 	s.saveCacheAsyncLocked(ctx)
-	return m
 }
 
 // removeReplayedOutboxLocked removes only the mutations that were replayed.
@@ -1149,21 +1155,25 @@ func (s *Service) saveCacheAsyncLocked(ctx context.Context) {
 	s.saveCacheSnapshotAsyncLocked(ctx, nil)
 }
 
-// saveCacheItemsAsyncLocked updates the encrypted cache from the current cache
+// saveCacheMutationAsyncLocked patches the encrypted cache from its current
 // contents rather than from resident s.items. This preserves PIN-unlocked
 // sessions, where resident plaintext intentionally stays empty/partial.
 // The caller MUST hold s.mu.
-func (s *Service) saveCacheItemsAsyncLocked(ctx context.Context, mutateItems func([]vault.Item) []vault.Item) {
-	s.saveCacheSnapshotAsyncLocked(ctx, mutateItems)
+func (s *Service) saveCacheMutationAsyncLocked(ctx context.Context, mutate func(*decryptedCacheSnapshot)) {
+	s.saveCacheSnapshotAsyncLocked(ctx, mutate)
 }
 
 // saveCacheSnapshotAsyncLocked snapshots the current key/outbox and persists
-// cache state asynchronously. If mutateItems is non-nil, items/folders are
-// loaded from the existing encrypted cache, mutated, and saved back; otherwise
-// resident s.items/s.folders are snapshotted. The caller MUST hold s.mu.
-func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutateItems func([]vault.Item) []vault.Item) {
+// cache state asynchronously. If mutate is non-nil, items/folders are loaded
+// from the existing encrypted cache and handed to mutate, then saved back;
+// otherwise resident s.items/s.folders are snapshotted. In a cache-only
+// session the outbox is loaded from the cache as well (the resident outbox is
+// empty there), so mutate also sees and extends the persisted outbox. The
+// caller MUST hold s.mu.
+func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutate func(*decryptedCacheSnapshot)) {
 	s.saveSeq++
 	seq := s.saveSeq
+	cacheOnly := s.sessionMode.cacheOnly()
 	key := make([]byte, len(s.cacheKey))
 	copy(key, s.cacheKey)
 	salt := make([]byte, len(s.cacheSalt))
@@ -1182,6 +1192,11 @@ func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutateItems 
 	if len(key) == 0 {
 		return
 	}
+	// A cache-only session persists its outbox from the cache contents below.
+	outboxFromCache := cacheOnly && mutate != nil
+	if outboxFromCache {
+		s.cachePatches = append(s.cachePatches, mutate)
+	}
 
 	s.saveWG.Go(func() {
 		defer clear(key)
@@ -1193,8 +1208,17 @@ func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutateItems 
 		// if a newer save was queued while this goroutine waited. The newer
 		// goroutine owns the durable write; Shutdown waits on saveWG, and each
 		// save has a bounded timeout, so skipping stale snapshots is intentional.
+		//
+		// Cache-only patches are deltas, not snapshots: they are never dropped.
+		// Whichever save runs first applies every queued patch in order, and a
+		// save that finds the queue empty has nothing left to do.
 		s.mu.Lock()
 		stale := seq != s.saveSeq
+		var patches []func(*decryptedCacheSnapshot)
+		if outboxFromCache {
+			patches, s.cachePatches = s.cachePatches, nil
+			stale = len(patches) == 0
+		}
 		s.mu.Unlock()
 		if stale {
 			return
@@ -1203,17 +1227,13 @@ func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutateItems 
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 
-		if vc.outbox != nil {
+		if vc.outbox != nil && !outboxFromCache {
 			// Persist the encrypted outbox independently of cache item patching. If
-			// mutateItems later cannot load the item cache, keeping outbox durable is
+			// mutate later cannot load the item cache, keeping outbox durable is
 			// still preferable to losing queued local mutations.
 			outboxLog, outboxStarted := logAppServiceStart(cleanupCtx, "save_outbox")
 			err := vc.SaveOutbox(cleanupCtx, key, outboxSnap)
 			logAppServiceFinishCount(outboxLog, outboxStarted, err, len(outboxSnap))
-		}
-
-		if !vc.Available() {
-			return
 		}
 
 		cacheLog, cacheStarted := logAppServiceStart(cleanupCtx, "save_cache")
@@ -1224,7 +1244,7 @@ func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutateItems 
 			Outbox:    outboxSnap,
 			Conflicts: conflictsSnap,
 		}
-		if mutateItems != nil {
+		if mutate != nil && (vc.Available() || outboxFromCache) {
 			loaded, loadErr := vc.Open(cleanupCtx, key)
 			if loadErr != nil {
 				cacheLog.Warn().
@@ -1236,10 +1256,29 @@ func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutateItems 
 			if len(data.Salt) == 0 {
 				data.Salt = loaded.Salt
 			}
-			data.Items = mutateItems(loaded.Items)
+			data.Items = loaded.Items
 			// Keep folders from the encrypted cache, not resident s.folders: PIN
 			// unlock sessions intentionally keep resident vault state empty.
 			data.Folders = loaded.Folders
+			if outboxFromCache {
+				data.Outbox = loaded.Outbox
+			}
+			if outboxFromCache {
+				for _, patch := range patches {
+					patch(&data)
+				}
+			} else {
+				mutate(&data)
+			}
+			if outboxFromCache {
+				outboxLog, outboxStarted := logAppServiceStart(cleanupCtx, "save_outbox")
+				err := vc.SaveOutbox(cleanupCtx, key, data.Outbox)
+				logAppServiceFinishCount(outboxLog, outboxStarted, err, len(data.Outbox))
+			}
+		}
+
+		if !vc.Available() {
+			return
 		}
 
 		err := vc.Save(cleanupCtx, key, accountHash, data)

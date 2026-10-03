@@ -217,12 +217,8 @@ func TestMutationRemoteSucceeds(t *testing.T) {
 	}
 }
 
-// pendingTestModes: the offline (outbox) path is verified for resident sessions
-// here; cache-only persistence of queued mutations is covered with its fix.
-var pendingTestModes = sessionModes[:1]
-
 func TestMutationRemoteErrorQueuesInOutbox(t *testing.T) {
-	for _, tc := range pendingTestModes {
+	for _, tc := range sessionModes {
 		for _, mc := range mutationCases() {
 			t.Run(tc.name+"/"+mc.name, func(t *testing.T) {
 				remote := &fakeRemote{}
@@ -428,4 +424,88 @@ func TestOfflineMutationIDs(t *testing.T) {
 	require.Len(t, outbox, 2)
 	require.NotEqual(t, outbox[0].ID, outbox[1].ID)
 	require.False(t, outbox[0].CreatedAt.Before(before))
+}
+
+// TestCacheOnlyMutationsPreserveEncryptedCache covers PIN sessions, whose
+// resident items and outbox are empty: a mutation must patch the encrypted
+// cache (items and outbox) and never overwrite it from the empty resident
+// state, whether the remote confirmed it or it was queued offline.
+func TestCacheOnlyMutationsPreserveEncryptedCache(t *testing.T) {
+	existing := coresync.OutboxMutation{
+		ID: "m-existing", Kind: coresync.MutationUpdate, ItemID: "item-3",
+		Payload: []byte(`{"id":"item-3","name":"Three","type":"login"}`),
+	}
+	for _, mc := range mutationCases() {
+		for _, offline := range []bool{false, true} {
+			name := mc.name + "/remote-ok"
+			if offline {
+				name = mc.name + "/remote-error"
+			}
+			t.Run(name, func(t *testing.T) {
+				remote := &fakeRemote{}
+				want, wantOutbox := mc.synced, 1
+				if offline {
+					mc.failRemote(remote)
+					want, wantOutbox = mc.pending, 2
+				} else if mc.succeedRemote != nil {
+					mc.succeedRemote(remote)
+				}
+				f := sessionFixture{items: mutationBase(), outbox: []coresync.OutboxMutation{existing}, remote: remote}
+				svc := f.service(t, sessionCacheOnly)
+
+				require.NoError(t, mc.run(svc))
+
+				items, outbox := vaultState(t, svc)
+				requireItemState(t, items, want, mutationBase())
+				require.Len(t, outbox, wantOutbox)
+				require.Equal(t, existing.ID, outbox[0].ID, "previously queued mutation must survive")
+				if offline {
+					require.Equal(t, mc.kind, outbox[1].Kind)
+				}
+
+				// Resident plaintext stays empty in a cache-only session.
+				svc.mu.Lock()
+				defer svc.mu.Unlock()
+				require.Empty(t, svc.items)
+				require.Empty(t, svc.outbox)
+			})
+		}
+	}
+}
+
+func TestCacheOnlyOfflineMutationsAccumulateInOutbox(t *testing.T) {
+	remote := &fakeRemote{trashErr: errRemoteDown, deleteErr: errRemoteDown}
+	f := sessionFixture{items: mutationBase(), remote: remote}
+	svc := f.service(t, sessionCacheOnly)
+
+	require.NoError(t, svc.Trash(context.Background(), "item-1"))
+	svc.saveWG.Wait()
+	require.NoError(t, svc.Delete(context.Background(), "item-3"))
+
+	items, outbox := vaultState(t, svc)
+	require.Len(t, outbox, 2)
+	require.Equal(t, coresync.MutationTrash, outbox[0].Kind)
+	require.Equal(t, coresync.MutationDelete, outbox[1].Kind)
+	require.True(t, items["item-1"].Deleted)
+	require.NotContains(t, items, "item-3")
+	require.Contains(t, items, "item-2")
+}
+
+// TestCacheOnlyBackToBackMutationsAreNotCoalesced holds the cache writer so
+// that two cache-only mutations are queued before either save runs. The older
+// save is then stale; its patch must still reach the encrypted cache.
+func TestCacheOnlyBackToBackMutationsAreNotCoalesced(t *testing.T) {
+	remote := &fakeRemote{trashErr: errRemoteDown, deleteErr: errRemoteDown}
+	f := sessionFixture{items: mutationBase(), remote: remote}
+	svc := f.service(t, sessionCacheOnly)
+
+	svc.cacheSaveMu.Lock()
+	require.NoError(t, svc.Trash(context.Background(), "item-1"))
+	require.NoError(t, svc.Delete(context.Background(), "item-3"))
+	svc.cacheSaveMu.Unlock()
+
+	items, outbox := vaultState(t, svc)
+	require.Len(t, outbox, 2)
+	require.True(t, items["item-1"].Deleted)
+	require.NotContains(t, items, "item-3")
 }
