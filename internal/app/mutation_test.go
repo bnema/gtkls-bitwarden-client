@@ -553,3 +553,51 @@ func TestMutationSpecsDependOnlyOnRemoteItems(t *testing.T) {
 	}
 	require.Equal(t, []string{"create", "update:item-1", "trash:item-1", "restore:item-1", "delete:item-1"}, r.calls)
 }
+
+// TestCacheOnlyMutationSurvivesUnreadableCache makes the encrypted cache
+// unreadable when an offline mutation is flushed. The queued outbox entry must
+// still become durable, and the whole mutation must be applied once the cache
+// can be read again, without duplicating the outbox entry.
+func TestCacheOnlyMutationSurvivesUnreadableCache(t *testing.T) {
+	existing := coresync.OutboxMutation{
+		ID: "m-existing", Kind: coresync.MutationUpdate, ItemID: "item-3",
+		Payload: []byte(`{"id":"item-3","name":"Three","type":"login"}`),
+	}
+	remote := &fakeRemote{createErr: errRemoteDown, trashErr: errRemoteDown}
+	f := sessionFixture{items: mutationBase(), remote: remote}
+	svc := f.service(t, sessionCacheOnly)
+	fc := svc.deps.Cache.(*fakeCache)
+	ob := &fakeOutbox{loadData: []coresync.OutboxMutation{existing}}
+	svc.deps.Outbox = ob
+
+	fc.mu.Lock()
+	fc.loadErr = errors.New("cache unreadable")
+	fc.mu.Unlock()
+	created, err := svc.Create(context.Background(), vault.Item{Name: "Offline"})
+	require.NoError(t, err)
+	svc.saveWG.Wait()
+
+	ob.mu.Lock()
+	require.Len(t, ob.saveData, 2, "queued entry must reach the outbox store even if the item cache is unreadable")
+	require.Equal(t, existing.ID, ob.saveData[0].ID)
+	require.Equal(t, created.ID, ob.saveData[1].ItemID)
+	ob.loadData = append([]coresync.OutboxMutation(nil), ob.saveData...)
+	ob.mu.Unlock()
+	svc.mu.Lock()
+	require.Len(t, svc.cachePatches, 1, "unflushed patch is kept for retry")
+	svc.mu.Unlock()
+
+	fc.mu.Lock()
+	fc.loadErr = nil
+	fc.mu.Unlock()
+	require.NoError(t, svc.Trash(context.Background(), "item-1"))
+
+	items, outbox := vaultState(t, svc)
+	require.Len(t, outbox, 3, "no duplicate outbox entries: existing, create, trash")
+	require.Equal(t, created.ID, outbox[1].ItemID)
+	require.Contains(t, items, created.ID, "retried create reaches the item cache")
+	require.True(t, items["item-1"].Deleted)
+	svc.mu.Lock()
+	require.Empty(t, svc.cachePatches)
+	svc.mu.Unlock()
+}

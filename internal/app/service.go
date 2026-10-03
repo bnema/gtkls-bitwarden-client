@@ -1256,6 +1256,9 @@ func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutate func(
 					Str("error_kind", safelog.SafeErrorKind(loadErr)).
 					Msg("skipping cache save: failed to load existing cache for mutation")
 				logAppServiceFinishCount(cacheLog, cacheStarted, loadErr, 0)
+				if outboxFromCache {
+					s.recoverCachePatches(cleanupCtx, vc, key, patches)
+				}
 				return
 			}
 			if len(data.Salt) == 0 {
@@ -1269,9 +1272,7 @@ func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutate func(
 				data.Outbox = loaded.Outbox
 			}
 			if outboxFromCache {
-				for _, patch := range patches {
-					patch(&data)
-				}
+				applyCachePatches(&data, patches)
 			} else {
 				mutate(&data)
 			}
@@ -1293,6 +1294,45 @@ func (s *Service) saveCacheSnapshotAsyncLocked(ctx context.Context, mutate func(
 		}
 		logAppServiceFinishCount(cacheLog, cacheStarted, err, len(data.Items)+len(data.Folders)+len(data.Outbox))
 	})
+}
+
+// applyCachePatches applies queued cache-only patches in order. A patch that
+// was already persisted by an earlier failed flush (see recoverCachePatches)
+// may run again, so the outbox is deduplicated by mutation ID afterwards; the
+// item effects of every kind are idempotent.
+func applyCachePatches(data *decryptedCacheSnapshot, patches []func(*decryptedCacheSnapshot)) {
+	for _, patch := range patches {
+		patch(data)
+	}
+	data.Outbox = dedupeOutboxMutations(data.Outbox)
+}
+
+// recoverCachePatches handles a cache-only flush that could not read the
+// encrypted cache. The patches are put back at the front of the queue so the
+// next flush retries them, and their outbox entries are made durable now by
+// merging them into the standalone outbox store, which does not depend on the
+// item cache. If that store cannot be read either, nothing is written (a
+// partial outbox would overwrite queued mutations) and the queue is the only
+// copy until the next flush.
+func (s *Service) recoverCachePatches(ctx context.Context, vc vaultCache, key []byte, patches []func(*decryptedCacheSnapshot)) {
+	s.mu.Lock()
+	s.cachePatches = append(patches, s.cachePatches...)
+	s.mu.Unlock()
+
+	if vc.outbox == nil || len(key) == 0 {
+		return
+	}
+	stored, err := vc.outbox.Load(ctx, key)
+	if err != nil {
+		return
+	}
+	// Item effects land on an empty list and are discarded; only the outbox
+	// is kept.
+	data := decryptedCacheSnapshot{Outbox: append([]coresync.OutboxMutation(nil), stored...)}
+	applyCachePatches(&data, patches)
+	log, started := logAppServiceStart(ctx, "save_outbox")
+	err = vc.SaveOutbox(ctx, key, data.Outbox)
+	logAppServiceFinishCount(log, started, err, len(data.Outbox))
 }
 
 func upsertVaultItem(items []vault.Item, item vault.Item) []vault.Item {
